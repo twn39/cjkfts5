@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         swift: ["5.9", "5.10", "6.0"]
-        grdb: ["7.0.0", "7.3.0", "7.5.0", "7.10.0"]
+        grdb: ["7.5.0", "7.8.0", "7.10.0"]
 
     steps:
       - name: Checkout
