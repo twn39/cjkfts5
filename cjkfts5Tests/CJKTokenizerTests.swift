@@ -529,7 +529,8 @@ final class UnicodeRangeTests: XCTestCase {
         XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x30000)!),  "U+30000 扩展G 起始")
         XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x3134F)!),  "U+3134F 扩展G 结尾")
         XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x2FFFF)!), "U+2FFFF 扩展G 前，不是 CJK")
-        XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x31350)!), "U+31350 扩展G 后，不是 CJK")
+        // U+31350 是 CJK 扩展 H 起始，应为 CJK（修复旧断言）
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x31350)!),  "U+31350 扩展H 起始，是 CJK")
     }
 
     func testHangulJamoBoundary() {
@@ -553,6 +554,51 @@ final class UnicodeRangeTests: XCTestCase {
         // 注：U+31F0 紧接在片假名（U+30A0–U+30FF）之后，中间 U+3100–U+31EF 不应是 CJK
         XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x3100)!),  "U+3100 片假名后、扩展前，不是 CJK")
         XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x3200)!),  "U+3200 片假名扩展后，不是 CJK")
+    }
+
+    // MARK: - 新增：CJK 扩展 H 边界测试（Unicode 15.0）
+
+    func testCJKExtHBoundary() {
+        // CJK 扩展 H U+31350–U+323AF（Unicode 15.0，~4,192字）
+        // 位于第三汉字平面（TIP，Tertiary Ideographic Plane），Script=Han
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x31350)!),  "U+31350 扩展H 起始")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x323AF)!),  "U+323AF 扩展H 结尾")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x31800)!),  "U+31800 扩展H 中间字符")
+        // 扩展 G（U+30000–U+3134F）与扩展 H 相邻，下方是最后一个 G 字符
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x3134F)!),  "U+3134F 扩展G 结尾，仍是 CJK")
+        // 扩展 H 结尾之后不应是 CJK
+        XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x323B0)!), "U+323B0 扩展H 后，不是 CJK")
+    }
+
+    // MARK: - 新增：SMP 假名区块边界测试
+
+    func testKanaExtendedBBoundary() {
+        // Kana Extended-B U+1AFF0–U+1AFFF（Unicode 14.0，台湾假名）
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1AFF0)!),  "U+1AFF0 Kana Extended-B 起始")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1AFFF)!),  "U+1AFFF Kana Extended-B 结尾")
+        XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x1AFEF)!), "U+1AFEF Kana Extended-B 前，不是 CJK")
+        // U+1B000 是 Katakana Supplement 起始，应是 CJK
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B000)!),  "U+1B000 Katakana Supplement 起始，是 CJK")
+    }
+
+    func testKatakanaSMPBlocksBoundary() {
+        // 三个相邻区块合并判断：U+1B000–U+1B16F
+        // Katakana Supplement U+1B000–U+1B0FF（Unicode 6.0）
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B000)!),  "U+1B000 Katakana Supplement 起始")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B0FF)!),  "U+1B0FF Katakana Supplement 结尾")
+        // Kana Extended-A U+1B100–U+1B12F（Unicode 10.0，Hentaigana）
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B100)!),  "U+1B100 Kana Extended-A 起始")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B12F)!),  "U+1B12F Kana Extended-A 结尾")
+        // Small Kana Extension U+1B130–U+1B16F（Unicode 12.0）
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B130)!),  "U+1B130 Small Kana Extension 起始")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B16F)!),  "U+1B16F Small Kana Extension 结尾")
+        // 区块前后不应是 CJK
+        XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x1AFEF)!), "U+1AFEF SMP 假名块前，不是 CJK")
+        XCTAssertFalse(CJKUnicode.isCJK(Unicode.Scalar(0x1B170)!), "U+1B170 Small Kana Extension 后，不是 CJK")
+        // 验证已赋值字符（Small Kana Extension 中的 9 个字符）
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B132)!),  "U+1B132 𛄲 HIRAGANA SMALL KO")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B155)!),  "U+1B155 𛅕 KATAKANA SMALL KO")
+        XCTAssertTrue(CJKUnicode.isCJK(Unicode.Scalar(0x1B167)!),  "U+1B167 𛅧 KATAKANA SMALL N")
     }
 }
 
@@ -656,6 +702,141 @@ final class UnicodeHelperTests: XCTestCase {
         // 空缓冲区返回 nil
         let empty = UnsafeRawBufferPointer(start: nil, count: 0)
         XCTAssertNil(CJKUnicode.decodeScalar(empty, at: 0), "空缓冲区返回 nil")
+    }
+
+    // MARK: - RFC 3629 §4 合规性测试
+
+    /// 从裸字节数组构造 UnsafeRawBufferPointer 并调用 decodeScalar 的辅助方法
+    private func decode(_ bytes: [UInt8]) -> (Unicode.Scalar, Int)? {
+        bytes.withUnsafeBytes { CJKUnicode.decodeScalar($0, at: 0) }
+    }
+
+    // ── Overlong 编码拒绝测试 ────────────────────────────────────────────────
+
+    func testRejectOverlong2Byte_C0_80() {
+        // C0 80 → U+0000 的 2 字节 Overlong 编码（经典 Null byte bypass）
+        // leading byte 0xC0 在 switch 的 default 分支，直接返回 nil
+        XCTAssertNil(decode([0xC0, 0x80]), "C0 80（Overlong U+0000）必须拒绝")
+    }
+
+    func testRejectOverlong2Byte_C1_BF() {
+        // C1 BF → U+007F 的 2 字节 Overlong 编码
+        XCTAssertNil(decode([0xC1, 0xBF]), "C1 BF（Overlong U+007F）必须拒绝")
+    }
+
+    func testAcceptMinValid2Byte() {
+        // C2 80 → U+0080，2 字节最小合法值
+        let r = decode([0xC2, 0x80])
+        XCTAssertNotNil(r, "C2 80（U+0080）是最小合法 2 字节序列")
+        XCTAssertEqual(r?.0.value, 0x0080)
+    }
+
+    func testRejectOverlong3Byte_E0_80_80() {
+        // E0 80 80 → U+0000 的 3 字节 Overlong 编码
+        // b0==E0 时 b1 必须 >= 0xA0，此处 b1==0x80 违规
+        XCTAssertNil(decode([0xE0, 0x80, 0x80]), "E0 80 80（Overlong U+0000）必须拒绝")
+    }
+
+    func testRejectOverlong3Byte_E0_9F_BF() {
+        // E0 9F BF → U+07FF 的 3 字节 Overlong 编码（b1==0x9F，临界值）
+        // U+07FF 应使用 2 字节（DF BF）；3 字节 E0 9F BF 是非法的
+        XCTAssertNil(decode([0xE0, 0x9F, 0xBF]), "E0 9F BF（Overlong U+07FF）必须拒绝")
+    }
+
+    func testAcceptMinValid3Byte() {
+        // E0 A0 80 → U+0800，3 字节最小合法值（b1==0xA0 是 E0 后的最小合法 continuation byte）
+        let r = decode([0xE0, 0xA0, 0x80])
+        XCTAssertNotNil(r, "E0 A0 80（U+0800）是最小合法 3 字节序列")
+        XCTAssertEqual(r?.0.value, 0x0800)
+    }
+
+    func testRejectOverlong4Byte_F0_80_80_80() {
+        // F0 80 80 80 → U+0000 的 4 字节 Overlong 编码
+        // b0==F0 时 b1 必须 >= 0x90，此处 b1==0x80 违规
+        XCTAssertNil(decode([0xF0, 0x80, 0x80, 0x80]), "F0 80 80 80（Overlong U+0000）必须拒绝")
+    }
+
+    func testRejectOverlong4Byte_F0_8F_BF_BF() {
+        // F0 8F BF BF → U+FFFF 的 4 字节 Overlong 编码（b1==0x8F，临界值）
+        // U+FFFF 应使用 3 字节（EF BF BF）；4 字节 F0 8F BF BF 是非法的
+        XCTAssertNil(decode([0xF0, 0x8F, 0xBF, 0xBF]), "F0 8F BF BF（Overlong U+FFFF）必须拒绝")
+    }
+
+    func testAcceptMinValid4Byte() {
+        // F0 90 80 80 → U+10000，4 字节最小合法值（b1==0x90 是 F0 后的最小合法 continuation byte）
+        let r = decode([0xF0, 0x90, 0x80, 0x80])
+        XCTAssertNotNil(r, "F0 90 80 80（U+10000）是最小合法 4 字节序列")
+        XCTAssertEqual(r?.0.value, 0x10000)
+    }
+
+    // ── 代理对拒绝测试（RFC 3629 §3：UTF-8 不得编码 U+D800–U+DFFF）───────────
+
+    func testRejectSurrogateHigh_ED_A0_80() {
+        // ED A0 80 → U+D800（高代理，代理对起始）
+        // b0==ED 时 b1 必须 < 0xA0，此处 b1==0xA0 违规
+        XCTAssertNil(decode([0xED, 0xA0, 0x80]), "ED A0 80（U+D800 高代理）必须拒绝")
+    }
+
+    func testRejectSurrogateLow_ED_BF_BF() {
+        // ED BF BF → U+DFFF（低代理，代理对结尾）
+        XCTAssertNil(decode([0xED, 0xBF, 0xBF]), "ED BF BF（U+DFFF 低代理）必须拒绝")
+    }
+
+    func testAcceptMaxBeforeSurrogate_ED_9F_BF() {
+        // ED 9F BF → U+D7FF（b1==0x9F，代理对前的最后一个合法码点）
+        let r = decode([0xED, 0x9F, 0xBF])
+        XCTAssertNotNil(r, "ED 9F BF（U+D7FF）是代理对前最大合法 3 字节序列")
+        XCTAssertEqual(r?.0.value, 0xD7FF)
+    }
+
+    // ── 超 Unicode 上限拒绝测试（RFC 3629 §3：最大合法码点 U+10FFFF）─────────
+
+    func testRejectAboveUnicodeMax_F4_90_80_80() {
+        // F4 90 80 80 → U+110000（超出 Unicode 上限 U+10FFFF）
+        // b0==F4 时 b1 必须 <= 0x8F，此处 b1==0x90 违规
+        XCTAssertNil(decode([0xF4, 0x90, 0x80, 0x80]), "F4 90 80 80（U+110000，超 Unicode 上限）必须拒绝")
+    }
+
+    func testRejectAboveUnicodeMax_F5_80_80_80() {
+        // F5 及以上：RFC 3629 定义的最大 leading byte 为 F4，F5 在 default 分支直接拒绝
+        XCTAssertNil(decode([0xF5, 0x80, 0x80, 0x80]), "F5 80 80 80（超范围 leading byte）必须拒绝")
+    }
+
+    func testAcceptUnicodeMax_F4_8F_BF_BF() {
+        // F4 8F BF BF → U+10FFFF（Unicode 最大合法码点）
+        let r = decode([0xF4, 0x8F, 0xBF, 0xBF])
+        XCTAssertNotNil(r, "F4 8F BF BF（U+10FFFF）是最大合法 4 字节序列")
+        XCTAssertEqual(r?.0.value, 0x10FFFF)
+    }
+
+    // ── 孤立 continuation byte 及截断序列拒绝测试 ────────────────────────────
+
+    func testRejectLoneContinuationByte() {
+        // 0x80–0xBF 作为首字节无意义
+        XCTAssertNil(decode([0x80]), "孤立 continuation byte 0x80 必须拒绝")
+        XCTAssertNil(decode([0xBF]), "孤立 continuation byte 0xBF 必须拒绝")
+    }
+
+    func testRejectTruncated2Byte() {
+        // 2 字节序列只有 1 个字节
+        XCTAssertNil(decode([0xC2]), "截断的 2 字节序列（仅 leading byte）必须拒绝")
+    }
+
+    func testRejectTruncated3Byte() {
+        // 3 字节序列只有 2 个字节
+        XCTAssertNil(decode([0xE6, 0xB8]), "截断的 3 字节序列（仅 2 字节）必须拒绝")
+    }
+
+    func testRejectTruncated4Byte() {
+        // 4 字节序列只有 3 个字节
+        XCTAssertNil(decode([0xF0, 0x90, 0x80]), "截断的 4 字节序列（仅 3 字节）必须拒绝")
+    }
+
+    func testRejectInvalidContinuationByte() {
+        // 3 字节序列中 b1 不是合法 continuation byte
+        XCTAssertNil(decode([0xE6, 0x41, 0x80]), "b1 非 continuation byte（0x41='A'）必须拒绝")
+        // 3 字节序列中 b2 不是合法 continuation byte
+        XCTAssertNil(decode([0xE6, 0xB8, 0x41]), "b2 非 continuation byte（0x41='A'）必须拒绝")
     }
 
     func testIsWordCharASCII() {
@@ -780,5 +961,57 @@ final class ExtendedUnicodeSearchTests: CJKTestBase {
 
         let r = try await searchAny(jamo1 + jamo2)
         XCTAssertFalse(r.isEmpty, "韩文 Jamo bigram 应命中")
+    }
+
+    // MARK: CJK 扩展 H（U+31350–U+323AF，Unicode 15.0）端到端搜索
+
+    func testExtHCharSearch() async throws {
+        // U+31350 是扩展 H 第一个字符
+        let extHChar = String(Unicode.Scalar(0x31350)!)
+        let text = extHChar + "大学"
+        try await insert(text)
+
+        // 扩展 H 字符应被识别为 CJK，与后续汉字构成连续 CJK 段
+        let r1 = try await searchAny(extHChar)
+        XCTAssertFalse(r1.isEmpty, "扩展H 单字 unigram 应命中")
+
+        let r2 = try await searchAny("大学")
+        XCTAssertFalse(r2.isEmpty, "扩展H字符后的普通汉字 bigram 应命中")
+
+        // 扩展H字符与后续汉字构成的跨段 bigram 应存在
+        let crossBigram = extHChar + "大"
+        let r3 = try await searchAny(crossBigram)
+        XCTAssertFalse(r3.isEmpty, "扩展H字符与普通汉字的跨段 bigram [\(crossBigram)] 应命中")
+    }
+
+    // MARK: SMP 假名区块（Kana Extended-B / Katakana Supplement / Kana Extended-A）端到端搜索
+
+    func testKanaExtendedBSearch() async throws {
+        // U+1AFF0 是 Kana Extended-B（台湾假名）第一个字符
+        let kanaB = String(Unicode.Scalar(0x1AFF0)!)
+        let kanaB2 = String(Unicode.Scalar(0x1AFF1)!)
+        let text = kanaB + kanaB2 + "台湾"
+        try await insert(text)
+
+        // Kana Extended-B 字符应被识别为 CJK，参与 bigram 分词
+        let r1 = try await searchAny(kanaB + kanaB2)
+        XCTAssertFalse(r1.isEmpty, "Kana Extended-B bigram 应命中")
+
+        let r2 = try await searchAny("台湾")
+        XCTAssertFalse(r2.isEmpty, "Kana Extended-B 后的普通汉字 bigram 应命中")
+    }
+
+    func testKatakanaSupplementSearch() async throws {
+        // U+1B000 是 Katakana Supplement 第一个字符
+        let kataSup = String(Unicode.Scalar(0x1B000)!)
+        let kataSup2 = String(Unicode.Scalar(0x1B001)!)
+        let text = kataSup + kataSup2 + "日本"
+        try await insert(text)
+
+        let r1 = try await searchAny(kataSup + kataSup2)
+        XCTAssertFalse(r1.isEmpty, "Katakana Supplement bigram 应命中")
+
+        let r2 = try await searchAny("日本")
+        XCTAssertFalse(r2.isEmpty, "Katakana Supplement 后的普通汉字 bigram 应命中")
     }
 }
