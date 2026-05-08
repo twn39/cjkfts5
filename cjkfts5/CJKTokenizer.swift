@@ -366,10 +366,11 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
 
     /// 对非 CJK 字符段进行分词：按非词字符切分，可选小写折叠后发出。
     ///
-    /// 非CJK 路径：
-    /// - `caseFolding=false`：直接传 pText 子指针（零分配）
-    /// - `caseFolding=true`，纯 ASCII 词：栈上折叠缓冲区（零堆分配）
-    /// - `caseFolding=true`，含非 ASCII 字符：lowercased() + withCString（1次分配/词）
+    /// 各路径内存策略（详见 `emitWordToken`）：
+    /// - `caseFolding=false`：零拷贝，直传 pText 子指针（零分配）
+    /// - `caseFolding=true`，纯 ASCII 全小写：零拷贝，直传 pText 子指针（零分配）
+    /// - `caseFolding=true`，纯 ASCII 含大写：`withUnsafeTemporaryAllocation`，优先栈分配
+    /// - `caseFolding=true`，含非 ASCII Unicode：`lowercased()` + `withCString`（1次分配/词）
     private func flushNonCJK(
         scalars: ContiguousArray<Unicode.Scalar>,
         byteStart: Int,
@@ -441,9 +442,16 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
 
     /// 将一个非 CJK word 发出为单个 FTS5 token。
     ///
-    /// - caseFolding=false：直接传 pText 子指针（零分配）
-    /// - 纯ASCII大写折叠：栈上缓冲区（零堆分配）
-    /// - Unicode 折叠：lowercased().withCString（1次分配）
+    /// **内存策略（按路径）：**
+    /// - `caseFolding=false`：零拷贝，直传 pText 子指针（零分配）
+    /// - 纯 ASCII，全小写：零拷贝，直传 pText 子指针（零分配）
+    /// - 纯 ASCII，含大写：`withUnsafeTemporaryAllocation`，优先栈分配，无 memset
+    /// - 含非 ASCII Unicode：`lowercased()` + `withCString`（1 次堆分配/词，不可避免）
+    ///
+    /// **核心洞察：**
+    /// - ASCII 每字符恰好 1 字节，故 `wordLen == scalars.count` ⟺ 纯 ASCII（O(1) 检测）
+    /// - 对纯 ASCII 词，`pText[byteStart + i]` 的字节值等于 `scalars[i].value`，
+    ///   因此可完全绕过 scalars，直接操作 pText 原始字节，消除多余的「字节→标量→字节」往返。
     private func emitWordToken(
         scalars: ContiguousArray<Unicode.Scalar>,
         byteStart: Int,
@@ -454,8 +462,8 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
     ) -> CInt {
         guard !scalars.isEmpty else { return SQLITE_OK }
 
+        // 路径 1：无大小写折叠 → 直传 pText 子指针，零分配、零拷贝
         if !options.caseFolding {
-            // 无大小写折叠：直接传 pText 子指针，零分配
             return emitRaw(
                 pText: pText,
                 byteStart: byteStart,
@@ -466,26 +474,47 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
             )
         }
 
-        // 检查是否为纯 ASCII（scalar.value < 0x80）
-        let isASCIIOnly = scalars.allSatisfy { $0.value < 0x80 }
+        let wordLen = byteEnd - byteStart
 
-        if isASCIIOnly {
-            // 纯 ASCII 路径：堆分配一个 CChar 缓冲区（ContiguousArray），折叠大小写
-            // 注：ContiguousArray 分配一次，比原 Array(string.utf8) 少一次 String 构造
-            let wordLen = byteEnd - byteStart
-            var buf = ContiguousArray<CChar>(repeating: 0, count: wordLen)
-            for (i, scalar) in scalars.enumerated() {
-                // scalar.value < 0x80，安全截断为 UInt8
-                let b = UInt8(truncatingIfNeeded: scalar.value)
-                // A–Z (0x41–0x5A) → a–z (0x61–0x7A)：折叠第 5 位即可
-                let folded: UInt8 = (b >= 0x41 && b <= 0x5A) ? b | 0x20 : b
-                // UInt8 → CChar (Int8)：ASCII 范围（0x00–0x7F）转换总是安全的
-                buf[i] = CChar(bitPattern: folded)
+        // ── ASCII 恒等式：ASCII 每字符恰好 1 字节 ────────────────────────────────
+        // wordLen == scalars.count  ⟺  所有字符均为 ASCII（O(1)，无需 allSatisfy 遍历）
+        // 对纯 ASCII 词，pText 字节值即 scalar value，可完全绕过 scalars 直接操作 pText。
+        // ─────────────────────────────────────────────────────────────────────────
+        if wordLen == scalars.count {
+            // 路径 2：纯 ASCII，直接扫描 pText 字节
+
+            // 步骤 ①：扫描原始字节，检测是否含大写字母（A–Z = 0x41–0x5A）
+            var hasUpper = false
+            for i in byteStart..<byteEnd {
+                if UInt8(bitPattern: pText[i]) >= 0x41 && UInt8(bitPattern: pText[i]) <= 0x5A {
+                    hasUpper = true
+                    break
+                }
             }
-            return buf.withUnsafeBufferPointer { cBuf in
-                callback(
+
+            // 步骤 ②a：全小写 → 直传 pText 子指针，零分配、零拷贝
+            if !hasUpper {
+                return emitRaw(
+                    pText: pText,
+                    byteStart: byteStart,
+                    byteEnd: byteEnd,
+                    flags: 0,
+                    callback: callback,
+                    context: context
+                )
+            }
+
+            // 步骤 ②b：含大写 → withUnsafeTemporaryAllocation（小容量优先栈分配）
+            // 缓冲区未初始化（无 memset），循环写入全部 wordLen 字节后传给回调
+            return withUnsafeTemporaryAllocation(of: CChar.self, capacity: wordLen) { buf in
+                for i in 0..<wordLen {
+                    let b = UInt8(bitPattern: pText[byteStart + i])
+                    // A–Z (0x41–0x5A) → a–z：置第 5 位（| 0x20）
+                    buf[i] = CChar(bitPattern: (b >= 0x41 && b <= 0x5A) ? b | 0x20 : b)
+                }
+                return callback(
                     context, 0,
-                    cBuf.baseAddress,
+                    buf.baseAddress,
                     CInt(wordLen),
                     CInt(byteStart),
                     CInt(byteEnd)
@@ -493,8 +522,8 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
             }
         }
 
-        // Unicode 路径：必须调用 lowercased()（Unicode 折叠规则复杂）
-        // 使用 withCString 而非 Array(string.utf8)，减少一次分配
+        // 路径 3：含非 ASCII Unicode → 必须调用 lowercased()（Unicode 折叠规则复杂）
+        // withCString 比 Array(string.utf8) 少一次 String 构造，已是该路径最优
         let raw = String(String.UnicodeScalarView(scalars))
         let token = raw.lowercased()
         return token.withCString { cStr in
