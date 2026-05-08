@@ -1,8 +1,10 @@
 # cjkfts5 — 通用 CJK FTS5 分词库
 
 [![Swift](https://img.shields.io/badge/Swift-5.9+-orange)](https://swift.org)
-[![Platform](https://img.shields.io/badge/Platform-iOS%20|%20macOS-blue)](https://developer.apple.com)
+[![GRDB](https://img.shields.io/badge/GRDB-7.x-blue)](https://github.com/groue/GRDB.swift)
+[![Platform](https://img.shields.io/badge/Platform-iOS%2016%2B%20%7C%20macOS%2013%2B-blue)](https://developer.apple.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![CI](https://github.com/twn39/cjkfts5/actions/workflows/ci.yml/badge.svg)](https://github.com/twn39/cjkfts5/actions/workflows/ci.yml)
 
 基于 **Bigram + Unigram 混合策略** 的通用 CJK（中文/日文/韩文）FTS5 分词器，专为 [GRDB](https://github.com/groue/GRDB.swift) 设计。
 
@@ -157,13 +159,19 @@ cjkfts5/
 │   ├── CJKTokenizerOptions.swift    # 配置选项类型
 │   └── CJKUnicodeHelper.swift       # Unicode 范围判断 & 字节偏移工具
 ├── cjkfts5Tests/
-│   └── CJKTokenizerTests.swift      # 完整单元测试套件（15 个用例）
+│   └── CJKTokenizerTests.swift      # 单元测试套件（42 个用例，8 个测试类）
+├── .github/workflows/
+│   └── ci.yml                       # CI 矩阵：Swift 5.9/5.10/6.0 × GRDB 7.x
 └── docs/
-    └── FTS5_TOKENIZER_DESIGN.md     # 深度技术文档：设计分析 & 关键问题
+    ├── FTS5_TOKENIZER_DESIGN.md     # 深度技术文档：设计分析 & 关键问题
+    └── GRDB_COMPATIBILITY.md        # GRDB 7.x 兼容性说明 & 升级检查清单
 ```
 
 ## 技术文档
 
-深度设计分析（含 FTS5 query/document 语义差异、假阳性 Bug 根因、修复方案对比）：
+- 📄 [FTS5 分词器设计分析](docs/FTS5_TOKENIZER_DESIGN.md) — query/document 语义差异、假阳性 Bug 根因、修复方案对比
+- 📄 [GRDB 7.x 兼容性说明](docs/GRDB_COMPATIBILITY.md) — API 依赖清单、版本记录、升级检查清单
 
-📄 [docs/FTS5_TOKENIZER_DESIGN.md](docs/FTS5_TOKENIZER_DESIGN.md)
+## 许可证
+
+[MIT](LICENSE) © 2026 twn39
