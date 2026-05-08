@@ -34,6 +34,32 @@
 搜索 "北京大学" → ❌ 正确地不命中（"京大" bigram 不存在于此文档）
 ```
 
+## 安装
+
+### Swift Package Manager
+
+在 `Package.swift` 中添加依赖：
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/twn39/cjkfts5.git", from: "1.0.0"),
+],
+targets: [
+    .target(
+        name: "YourTarget",
+        dependencies: [
+            .product(name: "cjkfts5", package: "cjkfts5"),
+        ]
+    ),
+]
+```
+
+或通过 **Xcode → File → Add Package Dependencies** 搜索：
+
+```
+https://github.com/twn39/cjkfts5.git
+```
+
 ## 快速开始
 
 ### 1. 注册分词器
