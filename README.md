@@ -71,9 +71,7 @@ import GRDB
 import cjkfts5
 
 var config = Configuration()
-config.prepareDatabase { db in
-    db.add(tokenizer: CJKTokenizer.self)
-}
+config.addCJKTokenizer()                  // 一行完成注册
 let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
 ```
 
@@ -82,7 +80,7 @@ let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
 ```swift
 try dbQueue.write { db in
     try db.create(virtualTable: "documents", using: FTS5()) { t in
-        t.tokenizer = CJKTokenizer.tokenizerDescriptor()
+        t.tokenizer = .cjk()              // 与 .unicode61()、.porter() 风格一致
         t.column("title")
         t.column("body")
     }
@@ -109,15 +107,18 @@ let docs2 = try Document.matching(anyPattern).fetchAll(db)
 
 ```swift
 // 默认配置（推荐）
-t.tokenizer = CJKTokenizer.tokenizerDescriptor()
+t.tokenizer = .cjk()
 
 // 关闭单字 unigram（减小约 30% 索引体积，但单字查询失效）
-let opts = CJKTokenizerOptions(emitUnigrams: false)
-t.tokenizer = CJKTokenizer.tokenizerDescriptor(options: opts)
+t.tokenizer = .cjk(emitUnigrams: false)
 
 // 关闭大小写折叠（大小写敏感搜索）
-let opts2 = CJKTokenizerOptions(caseFolding: false)
-t.tokenizer = CJKTokenizer.tokenizerDescriptor(options: opts2)
+t.tokenizer = .cjk(caseFolding: false)
+
+// 调试分词结果（可组合性）
+let tokenizer = try db.makeTokenizer(.cjk())
+let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
+// → [("清华", []), ("华大", []), ("大学", []), ("学", []), ("hello", [])]
 ```
 
 ## 覆盖的 Unicode 范围
@@ -157,9 +158,10 @@ cjkfts5/
 ├── cjkfts5/
 │   ├── CJKTokenizer.swift           # 核心分词器（FTS5CustomTokenizer）
 │   ├── CJKTokenizerOptions.swift    # 配置选项类型
-│   └── CJKUnicodeHelper.swift       # Unicode 范围判断 & 字节偏移工具
+│   ├── CJKUnicodeHelper.swift       # Unicode 范围判断 & 字节偏移工具
+│   └── CJKIntegration.swift         # GRDB 集成便捷 API（.cjk()、addCJKTokenizer()）
 ├── cjkfts5Tests/
-│   └── CJKTokenizerTests.swift      # 单元测试套件（42 个用例，8 个测试类）
+│   └── CJKTokenizerTests.swift      # 单元测试套件（113 个用例，11 个测试类）
 ├── .github/workflows/
 │   └── ci.yml                       # CI 矩阵：Swift 5.9/5.10/6.0 × GRDB 7.x
 └── docs/
