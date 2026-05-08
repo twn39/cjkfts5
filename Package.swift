@@ -16,7 +16,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/groue/GRDB.swift.git",
-            .upToNextMajor(from: "7.0.0")
+            .upToNextMajor(from: "7.5.0")
         ),
     ],
     targets: [
