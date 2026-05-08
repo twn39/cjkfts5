@@ -410,6 +410,253 @@ final class OptionTests: CJKTestBase {
     }
 }
 
+// MARK: - no_unigram 模式 Phrase Search 测试
+
+/// 验证 `emitUnigrams=false` 模式下，Phrase Search（`matchingPhrase`）的行为与语义。
+///
+/// 现有 `OptionTests` 中的 no_unigram 测试均使用 `searchRaw`（单 token 匹配），
+/// 本类专门覆盖 `search`（`matchingPhrase`，多 token 有序匹配）的场景。
+///
+/// **核心语义差异**（no_unigram vs 默认模式）：
+/// - bigram token 行为相同——均进入索引
+/// - co-located unigram 被抑制——单字 phrase 查询不再命中非末字
+/// - 末字 unigram 始终发出（`count>1` 时 L348，`count==1` 时 L296）
+final class NoUnigramPhraseTests: CJKTestBase {
+
+    // MARK: T1 — 基础 Phrase 命中（bigram 不受 no_unigram 影响）
+
+    /// no_unigram 模式下多字 phrase 命中行为应与默认模式相同。
+    ///
+    /// bigram 进入索引的逻辑不受 `emitUnigrams` 控制，
+    /// 因此由连续 bigram 构成的 phrase 查询应正常命中。
+    func testNoUnigramPhraseHit() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("北京清华大学", into: db)
+
+        let r1 = try await search("清华大学", in: db)
+        XCTAssertEqual(r1, ["北京清华大学"],
+            "no_unigram：[清华大学] 4字 phrase 应命中（bigram 序列连续）")
+
+        let r2 = try await search("北京清华大学", in: db)
+        XCTAssertEqual(r2, ["北京清华大学"],
+            "no_unigram：完整文本 phrase 应命中")
+
+        let r3 = try await search("北京", in: db)
+        XCTAssertEqual(r3, ["北京清华大学"],
+            "no_unigram：2字 phrase 应命中（等价于 bigram 命中）")
+    }
+
+    // MARK: T2 — Phrase 不命中（假阳性防御）
+
+    /// no_unigram 模式下，词序错误或非相邻字符构成的 phrase 不应命中。
+    func testNoUnigramPhraseMiss() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("北京清华大学", into: db)
+
+        let r1 = try await search("清华北京", in: db)
+        XCTAssertTrue(r1.isEmpty,
+            "no_unigram：词序颠倒的 phrase [清华北京] 不应命中")
+
+        // 非相邻字符伪 bigram（最关键的假阳性防御）
+        let r2 = try await search("北清", in: db)
+        XCTAssertTrue(r2.isEmpty,
+            "no_unigram：[北清] 非相邻字符 phrase 不应命中（假阳性防御）")
+
+        let r3 = try await search("清大", in: db)
+        XCTAssertTrue(r3.isEmpty,
+            "no_unigram：[清大] 非相邻字符 phrase 不应命中")
+    }
+
+    // MARK: T3 — 单字 Phrase 语义变化（最关键差异）
+
+    /// no_unigram 模式下，非末字单字 phrase 不命中，末字仍命中。
+    ///
+    /// 这是 no_unigram 与默认模式最大的语义差异：
+    /// 默认模式索引了 `pos k: bigram + co-located unigram`，
+    /// no_unigram 抑制了 co-located unigram，导致单字 phrase 查询
+    /// 无法通过 unigram 路径命中非末字位置。
+    func testNoUnigramSingleCharPhraseSemantics() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("清华大学", into: db)
+
+        // 非末字：co-located unigram 被抑制，phrase 查询不命中
+        let r1 = try await search("清", in: db)
+        XCTAssertTrue(r1.isEmpty,
+            "no_unigram：非末字[清] phrase 不应命中（co-located unigram 已抑制）")
+
+        let r2 = try await search("华", in: db)
+        XCTAssertTrue(r2.isEmpty,
+            "no_unigram：非末字[华] phrase 不应命中")
+
+        let r3 = try await search("大", in: db)
+        XCTAssertTrue(r3.isEmpty,
+            "no_unigram：非末字[大] phrase 不应命中")
+
+        // 末字：始终作为独立 unigram 发出（L348 路径，不受 emitUnigrams 约束）
+        let r4 = try await search("学", in: db)
+        XCTAssertFalse(r4.isEmpty,
+            "no_unigram：末字[学] phrase 应命中（末字 unigram 始终发出）")
+    }
+
+    // MARK: T4 — 多文档 Phrase 精确率
+
+    /// no_unigram 模式下多文档 phrase 搜索不产生跨文档假阳性。
+    func testNoUnigramPhraseMultiDocPrecision() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("北京大学", into: db)
+        try await insert("北京清华大学", into: db)
+        try await insert("复旦大学", into: db)
+
+        // [北京大学] 只应命中第一条，不应命中第二条（两者均含"北京"和"大学"但不相邻）
+        let r1 = try await search("北京大学", in: db)
+        XCTAssertEqual(r1, ["北京大学"],
+            "no_unigram：[北京大学] phrase 精确率——不应命中[北京清华大学]")
+
+        let r2 = try await search("清华大学", in: db)
+        XCTAssertEqual(r2, ["北京清华大学"],
+            "no_unigram：[清华大学] phrase 应精确命中且仅命中第二条")
+
+        let r3 = try await search("复旦", in: db)
+        XCTAssertEqual(r3, ["复旦大学"],
+            "no_unigram：[复旦] phrase 应精确命中且仅命中第三条")
+    }
+
+    // MARK: T5 — 奇数字／跨 bigram 边界的 Phrase
+
+    /// no_unigram 模式下 3字、5字、8字等非偶数长度 phrase 的行为。
+    ///
+    /// query 端产生连续 bigram 序列（e.g. "清华大" → 清华@0, 华大@1），
+    /// 这些 bigram 在文档索引中连续存在，因此 phrase match 成立。
+    func testNoUnigramOddLengthPhrase() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("清华大学研究生院", into: db)
+
+        // 3字 phrase（query 产生 2 个连续 bigram）
+        let r1 = try await search("清华大", in: db)
+        XCTAssertFalse(r1.isEmpty,
+            "no_unigram：3字 phrase [清华大] 应命中（清华@0 + 华大@1 连续）")
+
+        // 5字 phrase（query 产生 4 个连续 bigram）
+        let r2 = try await search("大学研究生", in: db)
+        XCTAssertFalse(r2.isEmpty,
+            "no_unigram：5字 phrase [大学研究生] 应命中（连续 bigram 序列）")
+
+        // 完整 8字 phrase
+        let r3 = try await search("清华大学研究生院", in: db)
+        XCTAssertFalse(r3.isEmpty,
+            "no_unigram：完整 8字 phrase 应命中")
+
+        // 非连续字符的伪 phrase 不应命中
+        let r4 = try await search("清华研究", in: db)
+        XCTAssertTrue(r4.isEmpty,
+            "no_unigram：[清华研究] 非连续字符 phrase 不应命中")
+    }
+
+    // MARK: T6 — 两字文档边界（单 bigram 文档）
+
+    /// 两字文档在 no_unigram 模式下：bigram 命中，首字不命中，末字命中。
+    ///
+    /// 两字文档发出：bigram("北京")@pos0 + unigram("京")@pos1
+    /// no_unigram 模式下 co-located 的"北"被抑制，末字"京"仍独立发出。
+    func testNoUnigramTwoCharDocPhrase() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("北京", into: db)
+
+        // 完整 bigram phrase 命中
+        let r1 = try await search("北京", in: db)
+        XCTAssertEqual(r1, ["北京"],
+            "no_unigram：两字文档 phrase [北京] 应命中（bigram 在索引）")
+
+        // 首字（非末字）phrase 不命中：unigram "北" 被抑制
+        let r2 = try await search("北", in: db)
+        XCTAssertTrue(r2.isEmpty,
+            "no_unigram：两字文档首字 [北] phrase 不应命中（首字 unigram 被抑制）")
+
+        // 末字 phrase 仍命中：末字 unigram 始终发出
+        let r3 = try await search("京", in: db)
+        XCTAssertFalse(r3.isEmpty,
+            "no_unigram：两字文档末字 [京] phrase 应命中（末字 unigram 始终发出）")
+    }
+
+    // MARK: T7 — 单字文档的「隐形豁免」（count==1 路径）
+
+    /// 单字文档在 no_unigram 模式下仍可被搜索。
+    ///
+    /// `emitCJKSegment` 的 `count==1` 分支（直接发出 unigram）
+    /// **不检查 `emitUnigrams`**，因此单字文档始终可搜索。
+    /// 这是合理的设计（否则单字文档在 no_unigram 模式下完全不可索引），
+    /// 但现有测试从未在 no_unigram 模式下固化此行为。
+    func testNoUnigramSingleCharDocument() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("学", into: db)
+
+        // count==1 路径绕过 emitUnigrams 检查，单字仍发出 unigram
+        let r = try await search("学", in: db)
+        XCTAssertEqual(r, ["学"],
+            "no_unigram：单字文档应命中（count==1 路径不受 emitUnigrams 约束）")
+    }
+
+    // MARK: T8 — 混合文本中 CJK/ASCII 路径独立性
+
+    /// no_unigram 仅影响 CJK 的 co-located unigram，ASCII 分词路径不受影响。
+    func testNoUnigramMixedTextPhrase() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false))
+        try await insert("清华大学 Tsinghua University", into: db)
+
+        // CJK phrase 命中（bigram 不受 no_unigram 影响）
+        let r1 = try await search("清华大学", in: db)
+        XCTAssertFalse(r1.isEmpty,
+            "no_unigram：混合文本中 CJK phrase [清华大学] 应命中")
+
+        // CJK 非末字 phrase 不命中
+        let r2 = try await search("清", in: db)
+        XCTAssertTrue(r2.isEmpty,
+            "no_unigram：混合文本中非末字[清] phrase 不应命中")
+
+        // ASCII 路径完全独立，case folding 正常
+        let r3 = try await searchAny("tsinghua", in: db)
+        XCTAssertFalse(r3.isEmpty,
+            "no_unigram：混合文本中 ASCII [tsinghua] 应命中（ASCII 路径不受影响）")
+
+        // CJK 末字仍命中
+        let r4 = try await search("学", in: db)
+        XCTAssertFalse(r4.isEmpty,
+            "no_unigram：混合文本中末字[学] phrase 应命中")
+    }
+
+    // MARK: T9 — 组合选项下的 Phrase Search
+
+    /// `no_unigram + no_caseFolding` 组合选项下，phrase 行为符合各自独立规则的叠加。
+    func testNoUnigramNoCaseFoldPhrase() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(emitUnigrams: false, caseFolding: false))
+        try await insert("清华大学 Hello World", into: db)
+
+        // CJK phrase 正常命中（bigram 不受两个选项影响）
+        let r1 = try await search("清华大学", in: db)
+        XCTAssertFalse(r1.isEmpty,
+            "no_unigram+no_caseFold：CJK phrase [清华大学] 应命中")
+
+        // CJK 非末字 phrase 不命中（no_unigram 生效）
+        let r2 = try await search("清", in: db)
+        XCTAssertTrue(r2.isEmpty,
+            "no_unigram+no_caseFold：非末字[清] phrase 不应命中")
+
+        // CJK 末字命中（末字始终发出）
+        let r3 = try await search("学", in: db)
+        XCTAssertFalse(r3.isEmpty,
+            "no_unigram+no_caseFold：末字[学] phrase 应命中")
+
+        // ASCII 大小写敏感（no_caseFolding 生效）
+        let r4 = try await searchRaw("Hello", in: db)
+        XCTAssertFalse(r4.isEmpty,
+            "no_unigram+no_caseFold：原始大写 [Hello] 应命中")
+
+        let r5 = try await searchRaw("hello", in: db)
+        XCTAssertTrue(r5.isEmpty,
+            "no_unigram+no_caseFold：小写 [hello] 不应命中（大小写不折叠）")
+    }
+}
+
 // MARK: - Unicode 范围覆盖测试
 
 final class UnicodeRangeTests: XCTestCase {
