@@ -1,7 +1,7 @@
 // CJKUnicodeHelper.swift
 // cjkfts5
 //
-// CJK Unicode 范围判断与字节偏移工具
+// CJK Unicode 范围判断与 UTF-8 零拷贝工具
 
 import Foundation
 
@@ -12,26 +12,59 @@ enum CJKUnicode {
 
     // MARK: 是否是 CJK 字符
 
-    /// 判断一个 Unicode scalar 是否属于 CJK 表意文字或 CJK 注音字母范围。
+    /// 判断一个 Unicode scalar 是否属于 CJK 表意文字、假名或韩文范围。
     ///
-    /// 覆盖范围：
-    /// - `U+4E00–U+9FFF`   CJK 统一汉字（中文、日文汉字，最常用）
-    /// - `U+3400–U+4DBF`   CJK 统一汉字扩展 A
-    /// - `U+20000–U+2A6DF` CJK 统一汉字扩展 B（生僻字）
-    /// - `U+F900–U+FAFF`   CJK 兼容汉字
-    /// - `U+3040–U+309F`   Hiragana（日文平假名）
-    /// - `U+30A0–U+30FF`   Katakana（日文片假名）
-    /// - `U+AC00–U+D7AF`   Hangul Syllables（韩文音节）
+    /// 覆盖范围（按 Unicode 15.1 标准，共约 103,000+ 字符）：
+    ///
+    /// **CJK 统一汉字：**
+    /// - `U+4E00–U+9FFF`     CJK 统一汉字（~20,992字，中文/日文汉字，最常用）
+    /// - `U+3400–U+4DBF`     CJK 扩展 A（~6,592字，Unicode 3.0）
+    /// - `U+F900–U+FAFF`     CJK 兼容汉字（~512字）
+    /// - `U+20000–U+2A6DF`   CJK 扩展 B（~42,720字，Unicode 3.1，生僻字）
+    /// - `U+2A700–U+2B73F`   CJK 扩展 C（~4,149字，Unicode 6.0）
+    /// - `U+2B740–U+2B81F`   CJK 扩展 D（~222字，Unicode 6.3）
+    /// - `U+2B820–U+2CEAF`   CJK 扩展 E（~5,762字，Unicode 8.0）
+    /// - `U+2CEB0–U+2EBEF`   CJK 扩展 F（~7,473字，Unicode 10.0）
+    /// - `U+2EBF0–U+2EE5F`   CJK 扩展 I（~622字，Unicode 15.1）
+    /// - `U+30000–U+3134F`   CJK 扩展 G（~4,939字，Unicode 13.0）
+    ///
+    /// **日文假名：**
+    /// - `U+3040–U+309F`     Hiragana（平假名）
+    /// - `U+30A0–U+30FF`     Katakana（片假名）
+    /// - `U+31F0–U+31FF`     Katakana Phonetic Extensions（爱努语片假名）
+    ///
+    /// **韩文：**
+    /// - `U+AC00–U+D7AF`     Hangul Syllables（韩文音节，~11,172字）
+    /// - `U+1100–U+11FF`     Hangul Jamo（韩文字母）
+    /// - `U+3130–U+318F`     Hangul Compatibility Jamo（韩文兼容字母）
     @inline(__always)
     static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
         let v = scalar.value
-        // 热路径：最高频范围优先判断，减少分支预测失败
-        if v >= 0x4E00 && v <= 0x9FFF { return true }   // CJK 统一汉字（最常用）
-        if v >= 0xAC00 && v <= 0xD7AF { return true }   // 韩文音节
-        if v >= 0x3040 && v <= 0x30FF { return true }   // 平/片假名（连续范围合并判断）
-        if v >= 0x3400 && v <= 0x4DBF { return true }   // CJK 扩展 A
-        if v >= 0xF900 && v <= 0xFAFF { return true }   // CJK 兼容汉字
-        if v >= 0x20000 && v <= 0x2A6DF { return true } // CJK 扩展 B
+
+        // ── 热路径：最高频范围优先，减少分支预测失败 ──────────────────────────
+        if v >= 0x4E00  && v <= 0x9FFF  { return true }   // CJK 统一汉字（最常用）
+        if v >= 0xAC00  && v <= 0xD7AF  { return true }   // 韩文音节
+
+        // 平假名 U+3040–U+309F 与片假名 U+30A0–U+30FF 连续，合并为一次判断
+        if v >= 0x3040  && v <= 0x30FF  { return true }   // 平假名 + 片假名
+
+        // ── 次热路径：BMP 补充范围 ─────────────────────────────────────────
+        if v >= 0x3400  && v <= 0x4DBF  { return true }   // CJK 扩展 A
+        if v >= 0xF900  && v <= 0xFAFF  { return true }   // CJK 兼容汉字
+        if v >= 0x1100  && v <= 0x11FF  { return true }   // 韩文 Jamo
+        if v >= 0x3130  && v <= 0x318F  { return true }   // 韩文兼容 Jamo
+        if v >= 0x31F0  && v <= 0x31FF  { return true }   // 片假名扩展（爱努语）
+
+        // ── 补充多语言平面（SMP）：扩展 B–I、扩展 G ──────────────────────────
+        // 注：SMP 字符 UTF-8 编码为 4 字节，在文本中出现频率较低
+        if v >= 0x20000 && v <= 0x2A6DF { return true }   // CJK 扩展 B（Unicode 3.1）
+        if v >= 0x2A700 && v <= 0x2B73F { return true }   // CJK 扩展 C（Unicode 6.0）
+        if v >= 0x2B740 && v <= 0x2B81F { return true }   // CJK 扩展 D（Unicode 6.3）
+        if v >= 0x2B820 && v <= 0x2CEAF { return true }   // CJK 扩展 E（Unicode 8.0）
+        if v >= 0x2CEB0 && v <= 0x2EBEF { return true }   // CJK 扩展 F（Unicode 10.0）
+        if v >= 0x2EBF0 && v <= 0x2EE5F { return true }   // CJK 扩展 I（Unicode 15.1）
+        if v >= 0x30000 && v <= 0x3134F { return true }   // CJK 扩展 G（Unicode 13.0）
+
         return false
     }
 
@@ -52,23 +85,70 @@ enum CJKUnicode {
         return false
     }
 
-    // MARK: 字节偏移计算
+    // MARK: UTF-8 零拷贝工具
 
-    /// 预计算 Unicode.Scalar 数组中每个字符的 UTF-8 起始字节偏移。
+    /// 从 UTF-8 leading byte 直接读出该 scalar 的字节长度，O(1)，零分配。
     ///
-    /// 返回长度为 `scalars.count + 1` 的数组：
-    /// - `offsets[i]`   = 第 i 个 scalar 的 UTF-8 起始字节偏移
-    /// - `offsets[n]`   = 整个字符串的总 UTF-8 字节长度
-    ///
-    /// - Complexity: O(n)，避免在内层循环重复计算偏移
-    static func computeByteOffsets(of scalars: [Unicode.Scalar]) -> [Int] {
-        var offsets = [Int](repeating: 0, count: scalars.count + 1)
-        var pos = 0
-        for (i, scalar) in scalars.enumerated() {
-            offsets[i] = pos
-            pos += scalar.utf8.count
+    /// 对于无效的 continuation byte（0x80–0xBF）或超范围字节，返回 1 以便逐字节跳过。
+    @inline(__always)
+    static func utf8ScalarLength(leadingByte b: UInt8) -> Int {
+        switch b {
+        case 0x00...0x7F: return 1   // ASCII（1 字节）
+        case 0xC2...0xDF: return 2   // 2 字节序列
+        case 0xE0...0xEF: return 3   // 3 字节序列（含全部常用 CJK BMP 字符）
+        case 0xF0...0xF4: return 4   // 4 字节序列（SMP，CJK 扩展 B-G）
+        default:          return 1   // 无效字节/continuation byte：跳过
         }
-        offsets[scalars.count] = pos
-        return offsets
+    }
+
+    /// 从 `bytes` 的 `offset` 位置解码一个 Unicode scalar，返回 `(scalar, 字节长度)`。
+    ///
+    /// 对无效 UTF-8 字节序列，返回 `nil`，调用方应将 `offset` 前进 1 字节后继续。
+    @inline(__always)
+    static func decodeScalar(
+        _ bytes: UnsafeRawBufferPointer,
+        at offset: Int
+    ) -> (Unicode.Scalar, Int)? {
+        guard offset < bytes.count else { return nil }
+        let b0 = bytes[offset]
+
+        switch b0 {
+        case 0x00...0x7F:
+            // 1 字节 ASCII
+            return (Unicode.Scalar(b0), 1)
+
+        case 0xC2...0xDF:
+            // 2 字节：110xxxxx 10xxxxxx
+            guard offset + 1 < bytes.count else { return nil }
+            let b1 = bytes[offset + 1]
+            guard b1 & 0xC0 == 0x80 else { return nil }
+            let v = UInt32(b0 & 0x1F) << 6 | UInt32(b1 & 0x3F)
+            guard let s = Unicode.Scalar(v) else { return nil }
+            return (s, 2)
+
+        case 0xE0...0xEF:
+            // 3 字节：1110xxxx 10xxxxxx 10xxxxxx
+            guard offset + 2 < bytes.count else { return nil }
+            let b1 = bytes[offset + 1], b2 = bytes[offset + 2]
+            guard b1 & 0xC0 == 0x80, b2 & 0xC0 == 0x80 else { return nil }
+            let v = UInt32(b0 & 0x0F) << 12 | UInt32(b1 & 0x3F) << 6 | UInt32(b2 & 0x3F)
+            // 排除代理对范围 U+D800–U+DFFF
+            guard v >= 0x800, !(v >= 0xD800 && v <= 0xDFFF),
+                  let s = Unicode.Scalar(v) else { return nil }
+            return (s, 3)
+
+        case 0xF0...0xF4:
+            // 4 字节：11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+            guard offset + 3 < bytes.count else { return nil }
+            let b1 = bytes[offset + 1], b2 = bytes[offset + 2], b3 = bytes[offset + 3]
+            guard b1 & 0xC0 == 0x80, b2 & 0xC0 == 0x80, b3 & 0xC0 == 0x80 else { return nil }
+            let v = UInt32(b0 & 0x07) << 18 | UInt32(b1 & 0x3F) << 12
+                  | UInt32(b2 & 0x3F) << 6  | UInt32(b3 & 0x3F)
+            guard v >= 0x10000, v <= 0x10FFFF, let s = Unicode.Scalar(v) else { return nil }
+            return (s, 4)
+
+        default:
+            return nil  // 无效字节（0xC0, 0xC1, 0xF5–0xFF 等）
+        }
     }
 }

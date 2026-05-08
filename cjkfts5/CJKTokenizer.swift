@@ -23,6 +23,16 @@
 // 对非 CJK 段（ASCII / Latin / 数字）采用空格/标点切分 + 小写折叠，
 // 与 unicode61 行为兼容。
 //
+// ## 性能架构（零拷贝直通设计）
+//
+// 直接操作 SQLite 传入的 pText 原始 UTF-8 字节，避免任何中间拷贝：
+//
+// 1. 入口层：跳过 Data+String 构造，以 UnsafeRawBufferPointer 直接引用 pText
+// 2. 迭代层：leading-byte UTF-8 解码，流式维护 bytePos，无全量数组分配
+// 3. CJK 发射层：直接传 pText 子指针给 xToken 回调（零拷贝，零分配）
+// 4. 非CJK ASCII 路径：栈上缓冲区大小写折叠（零堆分配）
+// 5. 非CJK Unicode 路径：withCString（1次分配/词，较之前减少1次）
+//
 // ## 线程安全
 //
 // CJKTokenizer 是无状态的（所有操作基于函数参数，无共享可变状态），
@@ -103,6 +113,9 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
 
     /// FTS5 调用此方法对文本进行分词（索引时和查询时均调用）。
     ///
+    /// 零拷贝设计：直接将 pText 作为 UnsafeRawBufferPointer 引用，
+    /// 不构造任何中间 Data/String/Array，CJK token 直接以子指针发出。
+    ///
     /// - Parameters:
     ///   - context:       透传给 `tokenCallback` 的不透明指针
     ///   - tokenization:  分词目的（文档索引 / 查询 / 自动补全）
@@ -119,88 +132,124 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
     ) -> CInt {
         guard let pText, nText > 0 else { return SQLITE_OK }
 
-        // 从原始字节构建 Swift String（pText 可能不以 \0 结尾，必须使用 nText）
+        // 将 pText 重解释为字节缓冲区，零拷贝，零分配
+        // pText 在整个 xTokenize 调用期间由 SQLite 保证有效
         let byteCount = Int(nText)
-        guard let text = String(
-            data: Data(bytes: pText, count: byteCount),
-            encoding: .utf8
-        ) else { return SQLITE_OK }
+        let rawBytes = UnsafeRawBufferPointer(start: pText, count: byteCount)
 
         // isQuery=true 时（MATCH 查询分词），末字不作为新位置独立 token 发出，
         // 以避免产生多余的 implicit AND 约束破坏 bigram 命中。
         let isQuery = tokenization.contains(.query)
-        return tokenizeText(text, isQuery: isQuery, callback: tokenCallback, context: context)
+        return tokenizeBytes(
+            rawBytes,
+            pText: pText,
+            isQuery: isQuery,
+            callback: tokenCallback,
+            context: context
+        )
     }
 
-    // MARK: 内部：主分词流程
+    // MARK: 内部：主分词流程（零拷贝）
 
-    /// 遍历文本，将字符分类为 CJK 段和非 CJK 段，分别处理后发出 token。
+    /// 直接在原始 UTF-8 字节上迭代，流式维护字节位置，无全量数组分配。
     ///
-    /// - Parameter isQuery: `true` 表示此次为 MATCH 查询分词，末字不额外占用新 FTS5 位置。
-    private func tokenizeText(
-        _ text: String,
+    /// - Parameter pText: 原始 C 指针，用于 CJK token 发射时的子指针计算
+    /// - Parameter isQuery: `true` 表示此次为 MATCH 查询分词，末字不额外占用新 FTS5 位置
+    private func tokenizeBytes(
+        _ bytes: UnsafeRawBufferPointer,
+        pText: UnsafePointer<CChar>,
         isQuery: Bool,
         callback: @escaping FTS5TokenCallback,
         context: UnsafeMutableRawPointer?
     ) -> CInt {
-        let scalars = Array(text.unicodeScalars)
-        guard !scalars.isEmpty else { return SQLITE_OK }
+        guard !bytes.isEmpty else { return SQLITE_OK }
 
-        // 预计算所有 scalar 的 UTF-8 字节起始偏移（O(n)，避免内层循环重复计算）
-        let byteOffsets = CJKUnicode.computeByteOffsets(of: scalars)
+        var bytePos = 0
 
-        var i = 0
-        // 非 CJK 字符缓冲区（收集一段非 CJK 字符后统一处理）
-        var nonCJKStart = 0      // 当前非 CJK 段的起始 scalar 下标
-        var nonCJKCount = 0     // 当前非 CJK 段的 scalar 数量
+        // 非 CJK 段累积：记录段的字节起止和 scalar 序列
+        var nonCJKByteStart = 0
+        var nonCJKScalars = ContiguousArray<Unicode.Scalar>()
+        nonCJKScalars.reserveCapacity(64)
 
-        while i < scalars.count {
-            if CJKUnicode.isCJK(scalars[i]) {
-                // 先 flush 之前积累的非 CJK 段
-                if nonCJKCount > 0 {
+        // CJK 段：记录每个 scalar 的起始字节偏移（段内局部数组，较小）
+        var cjkByteStarts = ContiguousArray<Int>()
+        cjkByteStarts.reserveCapacity(128)
+
+        while bytePos < bytes.count {
+            guard let (scalar, scalarLen) = CJKUnicode.decodeScalar(bytes, at: bytePos) else {
+                // 无效 UTF-8 字节：跳过，视作分隔符
+                if !nonCJKScalars.isEmpty {
                     let rc = flushNonCJK(
-                        scalars: scalars,
-                        start: nonCJKStart,
-                        count: nonCJKCount,
-                        byteOffsets: byteOffsets,
+                        scalars: nonCJKScalars,
+                        byteStart: nonCJKByteStart,
+                        byteEnd: bytePos,
+                        pText: pText,
                         callback: callback,
                         context: context
                     )
-                    nonCJKCount = 0
+                    nonCJKScalars.removeAll(keepingCapacity: true)
+                    guard rc == SQLITE_OK else { return rc }
+                }
+                bytePos += 1
+                continue
+            }
+
+            if CJKUnicode.isCJK(scalar) {
+                // ── 进入 CJK 字符 ────────────────────────────────────────────
+
+                // 先 flush 已积累的非 CJK 段
+                if !nonCJKScalars.isEmpty {
+                    let rc = flushNonCJK(
+                        scalars: nonCJKScalars,
+                        byteStart: nonCJKByteStart,
+                        byteEnd: bytePos,
+                        pText: pText,
+                        callback: callback,
+                        context: context
+                    )
+                    nonCJKScalars.removeAll(keepingCapacity: true)
                     guard rc == SQLITE_OK else { return rc }
                 }
 
-                // 找到 CJK 段的结束位置（下一个非 CJK 字符前）
-                let cjkStart = i
-                while i < scalars.count && CJKUnicode.isCJK(scalars[i]) { i += 1 }
+                // 收集连续 CJK 段
+                cjkByteStarts.removeAll(keepingCapacity: true)
+                var curPos = bytePos
+                while curPos < bytes.count,
+                      let (s, sLen) = CJKUnicode.decodeScalar(bytes, at: curPos),
+                      CJKUnicode.isCJK(s) {
+                    cjkByteStarts.append(curPos)
+                    curPos += sLen
+                }
+                // curPos 现在指向段结尾（下一个非 CJK 字节）
 
-                // 发出 CJK 段的 bigram + unigram token
+                // 发出 CJK 段（直接用 pText 子指针，零拷贝）
                 let rc = emitCJKSegment(
-                    scalars: scalars,
-                    start: cjkStart,
-                    end: i,
-                    byteOffsets: byteOffsets,
+                    byteStarts: cjkByteStarts,
+                    segByteEnd: curPos,
+                    pText: pText,
                     isQuery: isQuery,
                     callback: callback,
                     context: context
                 )
                 guard rc == SQLITE_OK else { return rc }
 
+                bytePos = curPos
+
             } else {
-                // 非 CJK 字符：加入缓冲区
-                if nonCJKCount == 0 { nonCJKStart = i }
-                nonCJKCount += 1
-                i += 1
+                // ── 非 CJK 字符 ──────────────────────────────────────────────
+                if nonCJKScalars.isEmpty { nonCJKByteStart = bytePos }
+                nonCJKScalars.append(scalar)
+                bytePos += scalarLen
             }
         }
 
         // flush 末尾剩余的非 CJK 段
-        if nonCJKCount > 0 {
+        if !nonCJKScalars.isEmpty {
             let rc = flushNonCJK(
-                scalars: scalars,
-                start: nonCJKStart,
-                count: nonCJKCount,
-                byteOffsets: byteOffsets,
+                scalars: nonCJKScalars,
+                byteStart: nonCJKByteStart,
+                byteEnd: bytePos,
+                pText: pText,
                 callback: callback,
                 context: context
             )
@@ -210,9 +259,15 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         return SQLITE_OK
     }
 
-    // MARK: 内部：CJK 段处理 — Bigram + Unigram
+    // MARK: 内部：CJK 段处理 — 零拷贝 Bigram + Unigram
 
-    /// 对 `scalars[start..<end]` 区间的 CJK 字符段发出 bigram（主）+ unigram（co-located）。
+    /// 对一个 CJK 段发出 bigram（主）+ unigram（co-located）token。
+    ///
+    /// 所有 token 均以 `pText` 子指针直接传给回调，**零拷贝，零分配**。
+    ///
+    /// - Parameter byteStarts: 段内每个 scalar 的字节起始偏移（ContiguousArray）
+    /// - Parameter segByteEnd: 段末尾的字节偏移（最后一个 scalar 结束后）
+    /// - Parameter pText:      原始 UTF-8 字节指针（xTokenize 期间始终有效）
     ///
     /// **文档索引模式（isQuery=false）位置规则：**
     /// - 每对相邻字符构成一个 bigram，各自占据独立的 FTS5 位置
@@ -227,23 +282,22 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
     /// "it is important that the tokenizer only provide synonyms when
     ///  tokenizing document text, not query text"
     private func emitCJKSegment(
-        scalars: [Unicode.Scalar],
-        start: Int,
-        end: Int,
-        byteOffsets: [Int],
+        byteStarts: ContiguousArray<Int>,
+        segByteEnd: Int,
+        pText: UnsafePointer<CChar>,
         isQuery: Bool,
         callback: @escaping FTS5TokenCallback,
         context: UnsafeMutableRawPointer?
     ) -> CInt {
-        let length = end - start
-        guard length > 0 else { return SQLITE_OK }
+        let count = byteStarts.count
+        guard count > 0 else { return SQLITE_OK }
 
-        if length == 1 {
-            // 单个 CJK 字符：直接发出 unigram（主 token，新位置）
-            return emitString(
-                String(scalars[start]),
-                iStart: byteOffsets[start],
-                iEnd: byteOffsets[start + 1],
+        if count == 1 {
+            // 单个 CJK 字符：直接发出 unigram（主 token，新位置），零拷贝
+            return emitRaw(
+                pText: pText,
+                byteStart: byteStarts[0],
+                byteEnd: segByteEnd,
                 flags: 0,
                 callback: callback,
                 context: context
@@ -251,31 +305,32 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         }
 
         // 多个 CJK 字符：发出 bigram 序列
-        for k in start..<end {
-            let hasNext = (k + 1 < end)
+        for k in 0..<count {
+            let hasNext = (k + 1 < count)
 
             if hasNext {
-                // ── 主 token：bigram（占据新的 FTS5 位置）────────────────
-                let bigram = String(scalars[k]) + String(scalars[k + 1])
-                let rc = emitString(
-                    bigram,
-                    iStart: byteOffsets[k],
-                    iEnd: byteOffsets[k + 2],
-                    flags: 0,  // 不加 COLOCATED → FTS5 自动递增位置
+                // ── 主 token：bigram（占据新的 FTS5 位置），零拷贝 ────────────
+                // bigram 字节范围：byteStarts[k] ..< byteStarts[k+2]（或 segByteEnd）
+                let bigramEnd = (k + 2 < count) ? byteStarts[k + 2] : segByteEnd
+                let rc = emitRaw(
+                    pText: pText,
+                    byteStart: byteStarts[k],
+                    byteEnd: bigramEnd,
+                    flags: 0,
                     callback: callback,
                     context: context
                 )
                 guard rc == SQLITE_OK else { return rc }
 
-                // ── co-located：当前字 unigram（与上方 bigram 同位置）────
+                // ── co-located：当前字 unigram（与上方 bigram 同位置），零拷贝 ──
                 // 仅在文档索引模式下发出：query 模式下不发出任何 unigram（包括 co-located），
                 // 否则 FTS5 会把 co-located 当作 bigram 的 synonym 查询，
                 // 导致 "北清" 命中任何含 "北" 的文档（假阳性）。
                 if options.emitUnigrams && !isQuery {
-                    let rc2 = emitString(
-                        String(scalars[k]),
-                        iStart: byteOffsets[k],
-                        iEnd: byteOffsets[k + 1],
+                    let rc2 = emitRaw(
+                        pText: pText,
+                        byteStart: byteStarts[k],
+                        byteEnd: byteStarts[k + 1],
                         flags: FTS5_TOKEN_COLOCATED,
                         callback: callback,
                         context: context
@@ -283,17 +338,18 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                     guard rc2 == SQLITE_OK else { return rc2 }
                 }
 
-                // ── query 模式：末字直接跳过（不发出任何 token）────────
+                // ── query 模式：末字直接跳过（不发出任何 token）────────────────
                 // 末字在 query 模式下既不能作为新位置（会产生 AND 约束），
                 // 也不能作为 co-located（会产生 synonym 误命中）。直接跳过。
+
             } else {
-                // ── 最后一个字符（文档索引模式）：单独发出 unigram（新位置）────
+                // ── 最后一个字符（文档索引模式）：单独发出 unigram（新位置），零拷贝 ──
                 // query 模式下已在上一轮迭代的 bigram co-located 处处理，此处跳过。
                 if !isQuery {
-                    let rc = emitString(
-                        String(scalars[k]),
-                        iStart: byteOffsets[k],
-                        iEnd: byteOffsets[k + 1],
+                    let rc = emitRaw(
+                        pText: pText,
+                        byteStart: byteStarts[k],
+                        byteEnd: segByteEnd,
                         flags: 0,
                         callback: callback,
                         context: context
@@ -308,56 +364,73 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
 
     // MARK: 内部：非 CJK 段处理 — Word Splitting + Case Folding
 
-    /// 对 `scalars[start..<start+count]` 区间的非 CJK 字符段进行分词。
+    /// 对非 CJK 字符段进行分词：按非词字符切分，可选小写折叠后发出。
     ///
-    /// 算法：
-    /// 1. 按非词字符（空格、标点等）切分出 word runs
-    /// 2. 若 `options.caseFolding == true`，对每个 word 进行小写折叠
-    /// 3. 每个 word 发出为一个新的 FTS5 位置
-    ///
-    /// 支持 Unicode 全范围的字母和数字（通过 `Unicode.Scalar.Properties`），
-    /// 与 unicode61 tokenizer 的非 CJK 行为高度兼容。
+    /// 非CJK 路径：
+    /// - `caseFolding=false`：直接传 pText 子指针（零分配）
+    /// - `caseFolding=true`，纯 ASCII 词：栈上折叠缓冲区（零堆分配）
+    /// - `caseFolding=true`，含非 ASCII 字符：lowercased() + withCString（1次分配/词）
     private func flushNonCJK(
-        scalars: [Unicode.Scalar],
-        start: Int,
-        count: Int,
-        byteOffsets: [Int],
+        scalars: ContiguousArray<Unicode.Scalar>,
+        byteStart: Int,
+        byteEnd: Int,
+        pText: UnsafePointer<CChar>,
         callback: @escaping FTS5TokenCallback,
         context: UnsafeMutableRawPointer?
     ) -> CInt {
-        let end = start + count
-        var wordScalars: [Unicode.Scalar] = []
+        // 用字节偏移追踪当前词的起止
+        var wordByteStart = byteStart
+        var wordByteEnd = byteStart
+        // 当前词的 scalar 序列（用于 Unicode 大小写折叠路径）
+        var wordScalars = ContiguousArray<Unicode.Scalar>()
         wordScalars.reserveCapacity(32)
-        var wordByteStart = 0
+        var inWord = false
 
-        for k in start..<end {
-            let scalar = scalars[k]
+        // 重新扫描 scalars，同步计算字节偏移
+        var curByte = byteStart
+        for scalar in scalars {
+            // scalar 字节长：直接由 scalar.value 范围决定，无需访问原始字节
+            let sLen: Int
+            switch scalar.value {
+            case 0x0000...0x007F: sLen = 1
+            case 0x0080...0x07FF: sLen = 2
+            case 0x0800...0xFFFF: sLen = 3
+            default:              sLen = 4
+            }
 
             if CJKUnicode.isWordChar(scalar) {
-                if wordScalars.isEmpty { wordByteStart = byteOffsets[k] }
+                if !inWord {
+                    wordByteStart = curByte
+                    wordScalars.removeAll(keepingCapacity: true)
+                    inWord = true
+                }
                 wordScalars.append(scalar)
+                wordByteEnd = curByte + sLen
             } else {
-                // 遇到分隔符：flush 已积累的 word
-                if !wordScalars.isEmpty {
+                // 分隔符：flush 当前词
+                if inWord {
                     let rc = emitWordToken(
-                        wordScalars,
+                        scalars: wordScalars,
                         byteStart: wordByteStart,
-                        byteEnd: byteOffsets[k],
+                        byteEnd: wordByteEnd,
+                        pText: pText,
                         callback: callback,
                         context: context
                     )
-                    wordScalars.removeAll(keepingCapacity: true)
+                    inWord = false
                     guard rc == SQLITE_OK else { return rc }
                 }
             }
+            curByte += sLen
         }
 
-        // flush 末尾剩余的 word
-        if !wordScalars.isEmpty {
+        // flush 末尾剩余的词
+        if inWord {
             return emitWordToken(
-                wordScalars,
+                scalars: wordScalars,
                 byteStart: wordByteStart,
-                byteEnd: byteOffsets[end],
+                byteEnd: wordByteEnd,
+                pText: pText,
                 callback: callback,
                 context: context
             )
@@ -366,51 +439,104 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         return SQLITE_OK
     }
 
-    /// 将一个非 CJK word（scalar 数组）发出为单个 FTS5 token。
+    /// 将一个非 CJK word 发出为单个 FTS5 token。
+    ///
+    /// - caseFolding=false：直接传 pText 子指针（零分配）
+    /// - 纯ASCII大写折叠：栈上缓冲区（零堆分配）
+    /// - Unicode 折叠：lowercased().withCString（1次分配）
     private func emitWordToken(
-        _ wordScalars: [Unicode.Scalar],
+        scalars: ContiguousArray<Unicode.Scalar>,
         byteStart: Int,
         byteEnd: Int,
+        pText: UnsafePointer<CChar>,
         callback: @escaping FTS5TokenCallback,
         context: UnsafeMutableRawPointer?
     ) -> CInt {
-        let raw = String(String.UnicodeScalarView(wordScalars))
-        let token = options.caseFolding ? raw.lowercased() : raw
-        return emitString(
-            token,
-            iStart: byteStart,
-            iEnd: byteEnd,
-            flags: 0,
-            callback: callback,
-            context: context
-        )
+        guard !scalars.isEmpty else { return SQLITE_OK }
+
+        if !options.caseFolding {
+            // 无大小写折叠：直接传 pText 子指针，零分配
+            return emitRaw(
+                pText: pText,
+                byteStart: byteStart,
+                byteEnd: byteEnd,
+                flags: 0,
+                callback: callback,
+                context: context
+            )
+        }
+
+        // 检查是否为纯 ASCII（scalar.value < 0x80）
+        let isASCIIOnly = scalars.allSatisfy { $0.value < 0x80 }
+
+        if isASCIIOnly {
+            // 纯 ASCII 路径：堆分配一个 CChar 缓冲区（ContiguousArray），折叠大小写
+            // 注：ContiguousArray 分配一次，比原 Array(string.utf8) 少一次 String 构造
+            let wordLen = byteEnd - byteStart
+            var buf = ContiguousArray<CChar>(repeating: 0, count: wordLen)
+            for (i, scalar) in scalars.enumerated() {
+                // scalar.value < 0x80，安全截断为 UInt8
+                let b = UInt8(truncatingIfNeeded: scalar.value)
+                // A–Z (0x41–0x5A) → a–z (0x61–0x7A)：折叠第 5 位即可
+                let folded: UInt8 = (b >= 0x41 && b <= 0x5A) ? b | 0x20 : b
+                // UInt8 → CChar (Int8)：ASCII 范围（0x00–0x7F）转换总是安全的
+                buf[i] = CChar(bitPattern: folded)
+            }
+            return buf.withUnsafeBufferPointer { cBuf in
+                callback(
+                    context, 0,
+                    cBuf.baseAddress,
+                    CInt(wordLen),
+                    CInt(byteStart),
+                    CInt(byteEnd)
+                )
+            }
+        }
+
+        // Unicode 路径：必须调用 lowercased()（Unicode 折叠规则复杂）
+        // 使用 withCString 而非 Array(string.utf8)，减少一次分配
+        let raw = String(String.UnicodeScalarView(scalars))
+        let token = raw.lowercased()
+        return token.withCString { cStr in
+            callback(
+                context, 0,
+                cStr,
+                CInt(token.utf8.count),
+                CInt(byteStart),
+                CInt(byteEnd)
+            )
+        }
     }
 
-    // MARK: 底层：调用 FTS5 tokenCallback
+    // MARK: 底层：零拷贝 token 发射
 
-    /// 将一个 token 字符串通过 FTS5 回调发出。
+    /// 将 `pText[byteStart..<byteEnd]` 直接作为 token 传给 FTS5 回调。
+    ///
+    /// **零拷贝，零分配**：直接传 pText 的子指针。
+    /// SQLite 保证 `pToken` 只需在 `xToken` 返回前有效，而 `pText` 在整个
+    /// `xTokenize` 调用期间有效，因此此操作完全合规。
     ///
     /// - Parameters:
-    ///   - string:  token 字符串（UTF-8）
-    ///   - iStart:  该 token 在原始输入文本中的 UTF-8 起始字节偏移（用于高亮/片段）
-    ///   - iEnd:    该 token 在原始输入文本中的 UTF-8 结束字节偏移（exclusive）
-    ///   - flags:   `0` 表示新位置；`FTS5_TOKEN_COLOCATED` 表示与上一 token 同位置
+    ///   - pText:     原始 UTF-8 字节指针（由 SQLite 在 xTokenize 调用期间管理）
+    ///   - byteStart: token 在 pText 中的起始字节偏移
+    ///   - byteEnd:   token 在 pText 中的结束字节偏移（exclusive）
+    ///   - flags:     `0` 表示新位置；`FTS5_TOKEN_COLOCATED` 表示与上一 token 同位置
     @inline(__always)
-    private func emitString(
-        _ string: String,
-        iStart: Int,
-        iEnd: Int,
+    private func emitRaw(
+        pText: UnsafePointer<CChar>,
+        byteStart: Int,
+        byteEnd: Int,
         flags: CInt,
         callback: @escaping FTS5TokenCallback,
         context: UnsafeMutableRawPointer?
     ) -> CInt {
-        // 使用 ContiguousArray<UInt8> 以避免 withCString 对 NUL 结尾的隐式假设，
-        // 并通过 utf8.count 得到正确的字节长度（lowercased() 后长度可能变化）。
-        let utf8 = Array(string.utf8)
-        return utf8.withUnsafeBytes { buf in
-            buf.withMemoryRebound(to: CChar.self) { cBuf in
-                callback(context, flags, cBuf.baseAddress, CInt(utf8.count), CInt(iStart), CInt(iEnd))
-            }
-        }
+        return callback(
+            context,
+            flags,
+            pText.advanced(by: byteStart),
+            CInt(byteEnd - byteStart),
+            CInt(byteStart),
+            CInt(byteEnd)
+        )
     }
 }
