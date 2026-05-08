@@ -1,0 +1,34 @@
+# ===== Swift Package Manager =====
+.build/
+.swiftpm/
+
+# ===== Xcode =====
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# ===== macOS =====
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# ===== Editors =====
+.vscode/
+*.swp
+*.swo
+*~
+.idea/
+
+# ===== SPM Resolved (commit 或忽略视团队策略而定) =====
+# Package.resolved   ← 建议提交，保证 CI 可复现构建；如需忽略请取消注释
