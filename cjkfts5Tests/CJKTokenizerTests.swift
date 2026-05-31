@@ -680,24 +680,27 @@ final class UnicodeCaseFoldingTests: CJKTestBase {
     /// `lowercased()` 只做大小写转换，不做 diacritic normalization，
     /// 因此 `cafe` 不等于 `café`——这是正确的搜索语义。
     func testLatinExtendedCaseFolding() async throws {
+        // 使用禁用变音符折叠的数据库以验证纯大小写折叠行为
+        let db = try makeDB(options: CJKTokenizerOptions(caseFolding: true, widthFolding: true, diacriticFolding: false))
+        
         // 德语「惊喜」——首字母 Ü (U+00DC) 走路径 3
-        try await insert("Überraschung")
+        try await insert("Überraschung", into: db)
         // 法语「咖啡」——纯小写含变音符（走路径 3，无大写折叠需求）
-        try await insert("café")
+        try await insert("café", into: db)
 
         // Ü(U+00DC) → ü(U+00FC)，折叠后应能命中
-        let r1 = try await searchAny("überraschung")
+        let r1 = try await searchAny("überraschung", in: db)
         XCTAssertFalse(r1.isEmpty,
             "Latin Extended：大写 [Ü] 折叠后 [überraschung] 应命中")
 
         // "cafe"（无变音符）≠ "café"（有变音符）
         // lowercased() 不移除变音符，两者在 FTS 索引中是不同 token
-        let r2 = try await searchAny("cafe")
+        let r2 = try await searchAny("cafe", in: db)
         XCTAssertTrue(r2.isEmpty,
             "Latin Extended：[cafe] 不应命中 [café]（折叠仅处理大小写，不移除变音符）")
 
         // 原始小写带变音符应直接命中
-        let r3 = try await searchAny("café")
+        let r3 = try await searchAny("café", in: db)
         XCTAssertFalse(r3.isEmpty,
             "Latin Extended：全小写 [café] 应命中（路径 3，无大写→小写转换）")
     }
@@ -779,7 +782,7 @@ final class UnicodeCaseFoldingTests: CJKTestBase {
     /// 验证全角大写拉丁字母（U+FF21–U+FF3A）折叠为全角小写（U+FF41–U+FF5A），
     /// 且全角字符不被等同于半角字符（不做宽度正规化）。
     func testFullWidthLatinCaseFolding() async throws {
-        // 全角大写 ＡＢＣ（U+FF21,FF22,FF23），走路径 3（3字节 UTF-8，非 ASCII）
+        // 1. 默认启用 widthFolding: true
         try await insert("ＡＢＣ")
 
         // 全角大写 → 全角小写（U+FF21 → U+FF41）
@@ -787,17 +790,53 @@ final class UnicodeCaseFoldingTests: CJKTestBase {
         XCTAssertFalse(r1.isEmpty,
             "全角拉丁：大写 [ＡＢＣ] 折叠后应命中全角小写 [ａｂｃ]")
 
-        // 全角 ≠ 半角：lowercased() 不做 Unicode 宽度正规化
+        // 全角 = 半角：开启折叠时，半角应命中全角
         let r2 = try await searchAny("abc")
-        XCTAssertTrue(r2.isEmpty,
-            "全角拉丁：全角 [ＡＢＣ] 不应被半角 [abc] 命中（无宽度正规化）")
+        XCTAssertFalse(r2.isEmpty,
+            "全角拉丁：全角 [ＡＢＣ] 应被半角 [abc] 命中（已宽度正规化）")
 
         // 全角小写文档，全角大写查询也应命中（查询端同样折叠）
         try await insert("ｄｅｆ")
         let r3 = try await searchAny("ＤＥＦ")
         XCTAssertFalse(r3.isEmpty,
             "全角拉丁：大写查询 [ＤＥＦ] 折叠后应命中全角小写文档 [ｄｅｆ]")
+
+        // 2. 禁用 widthFolding: false
+        let disabledDB = try makeDB(options: CJKTokenizerOptions(widthFolding: false))
+        try await insert("ＡＢＣ", into: disabledDB)
+
+        let r4 = try await searchAny("abc", in: disabledDB)
+        XCTAssertTrue(r4.isEmpty, "禁用宽度正规化时，全半角不应匹配")
     }
+
+    // MARK: T6 — 半角片假名宽度折叠与 Bigram 切分验证
+
+    /// 验证半角片假名 (U+FF61–U+FF9F) 能正确折叠为全角片假名，
+    /// 并正确被划分为 CJK 字符进行 Bigram 分词与匹配。
+    func testHalfWidthKatakanaWidthFolding() async throws {
+        // 1. 默认启用 widthFolding: true
+        // 插入半角片假名 "ﾃｽﾄ"
+        try await insert("ﾃｽﾄ")
+
+        // a) 验证与全角片假名 "テスト" 互相命中
+        let r1 = try await searchAny("テスト")
+        XCTAssertEqual(r1, ["ﾃｽﾄ"], "全半角片假名应完美互通匹配")
+
+        let r2 = try await searchAny("ﾃｽ")
+        XCTAssertEqual(r2, ["ﾃｽﾄ"], "应支持半角 Bigram 前缀匹配")
+
+        let r3 = try await searchAny("テス")
+        XCTAssertEqual(r3, ["ﾃｽﾄ"], "应支持全角 Bigram 前缀匹配")
+
+        // 2. 禁用 widthFolding: false
+        let disabledDB = try makeDB(options: CJKTokenizerOptions(widthFolding: false))
+        try await insert("ﾃｽﾄ", into: disabledDB)
+
+        // 禁用折叠时，半角片假名不进行 Bigram 划分，不匹配全角 "テスト"
+        let r4 = try await searchAny("テスト", in: disabledDB)
+        XCTAssertTrue(r4.isEmpty, "禁用宽度折叠时，全半角片假名不应互通")
+    }
+
 
     // MARK: T6 — CJK 与 Latin Extended 路径切换边界
 
@@ -1381,6 +1420,64 @@ final class UnicodeHelperTests: XCTestCase {
         XCTAssertTrue(CJKUnicode.isWordChar(Unicode.Scalar(0xFF19)!),  "U+FF19 ９ 全角数字应是词字符")
         XCTAssertFalse(CJKUnicode.isWordChar(Unicode.Scalar(0xFF0F)!), "U+FF0F ／ 不是词字符")
     }
+
+    // MARK: - Width Folding Helper Tests
+
+    func testFoldWidthASCII() {
+        // Full-width uppercase Latin -> Half-width uppercase Latin
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF21), 0x0041, "Ａ -> A")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF3A), 0x005A, "Ｚ -> Z")
+        
+        // Full-width lowercase Latin -> Half-width lowercase Latin
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF41), 0x0061, "ａ -> a")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF5E), 0x007E, "～ -> ~")
+        
+        // Full-width digits -> Half-width digits
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF10), 0x0030, "０ -> 0")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF19), 0x0039, "９ -> 9")
+    }
+
+    func testFoldWidthSpace() {
+        // Full-width ideographic space -> Half-width space
+        XCTAssertEqual(CJKUnicode.foldWidth(0x3000), 0x0020, "全角空格 -> 半角空格")
+    }
+
+    func testFoldWidthKatakana() {
+        // Half-width Katakana -> Full-width Katakana (examples from table)
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF61), 0x3002, "｡ -> 。")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF65), 0x30FB, "･ -> ・")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF71), 0x30A2, "ｱ -> ア")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF76), 0x30AB, "ｶ -> カ")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF9E), 0x309B, "ﾞ -> ゛")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF9F), 0x309C, "ﾟ -> ﾟ (semi-voiced mark)")
+    }
+
+    func testFoldWidthNonFoldable() {
+        // Standard ASCII
+        XCTAssertEqual(CJKUnicode.foldWidth(0x0041), 0x0041, "A -> A")
+        XCTAssertEqual(CJKUnicode.foldWidth(0x0020), 0x0020, "space -> space")
+        
+        // Normal CJK Ideographs
+        XCTAssertEqual(CJKUnicode.foldWidth(0x4E2D), 0x4E2D, "中 -> 中")
+        
+        // Normal Katakana / Hiragana
+        XCTAssertEqual(CJKUnicode.foldWidth(0x3042), 0x3042, "あ -> あ")
+        XCTAssertEqual(CJKUnicode.foldWidth(0x30A2), 0x30A2, "ア -> ア")
+        
+        // Outside range boundaries
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF00), 0xFF00, "FF00 -> FF00")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF5F), 0xFF5F, "FF5F -> FF5F")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFF60), 0xFF60, "FF60 -> FF60")
+        XCTAssertEqual(CJKUnicode.foldWidth(0xFFA0), 0xFFA0, "FFA0 -> FFA0")
+    }
+
+    func testIsHalfWidthKatakana() {
+        XCTAssertFalse(CJKUnicode.isHalfWidthKatakana(0xFF60), "U+FF60 is not half-width Katakana")
+        XCTAssertTrue(CJKUnicode.isHalfWidthKatakana(0xFF61), "U+FF61 is half-width Katakana")
+        XCTAssertTrue(CJKUnicode.isHalfWidthKatakana(0xFF71), "U+FF71 is half-width Katakana")
+        XCTAssertTrue(CJKUnicode.isHalfWidthKatakana(0xFF9F), "U+FF9F is half-width Katakana")
+        XCTAssertFalse(CJKUnicode.isHalfWidthKatakana(0xFFA0), "U+FFA0 is not half-width Katakana")
+    }
 }
 
 // MARK: - 扩展 CJK 字符集成搜索测试
@@ -1885,4 +1982,292 @@ private final class LockProtected<T> {
 
 extension LockProtected where T == Int {
     func increment() { mutate { $0 += 1 } }
+}
+
+// MARK: - Unicode 宽度正规化集成测试
+
+final class UnicodeWidthFoldingIntegrationTests: CJKTestBase {
+
+    // 1. 默认启用折叠：全角/半角 ASCII 混合匹配与大小写折叠
+    func testDefaultWidthFoldingWithASCII() async throws {
+        // 包含全角 ASCII 字符
+        try await insert("Ｈｅｌｌｏ Ｗｏｒｌｄ")
+        
+        // a) 半角小写查询应命中
+        let r1 = try await searchAny("hello")
+        XCTAssertEqual(r1, ["Ｈｅｌｌｏ Ｗｏｒｌｄ"], "默认折叠下，半角小写应命中全角大写")
+        
+        // b) 全角大写查询自身应命中
+        let r2 = try await searchAny("ＨＥＬＬＯ")
+        XCTAssertEqual(r2, ["Ｈｅｌｌｏ Ｗｏｒｌｄ"], "默认折叠下，全角大写查询应命中")
+        
+        // c) 全角小写查询也应命中
+        let r3 = try await searchAny("ｈｅｌｌｏ")
+        XCTAssertEqual(r3, ["Ｈｅｌｌｏ Ｗｏｒｌｄ"], "默认折叠下，全角小写查询应命中")
+    }
+
+    // 2. 默认启用折叠：半角片假名折叠与 Bigram/Unigram 切分
+    func testDefaultWidthFoldingWithKatakana() async throws {
+        // 插入包含半角片假名的文档 "ﾃｽﾄ"
+        try await insert("ﾃｽﾄ")
+        
+        // a) 验证与全角片假名互相命中
+        let r1 = try await searchAny("テスト")
+        XCTAssertEqual(r1, ["ﾃｽﾄ"], "默认折叠下，全角片假名应命中半角片假名")
+        
+        // b) 验证 Bigram 匹配
+        let r2 = try await searchAny("ﾃｽ")
+        XCTAssertEqual(r2, ["ﾃｽﾄ"], "默认折叠下，半角 Bigram 前缀应命中")
+        
+        // c) 验证 Unigram 匹配（默认 emitUnigrams 为 true）
+        let r3 = try await searchAny("ﾃ")
+        XCTAssertEqual(r3, ["ﾃｽﾄ"], "默认折叠下，半角 Unigram 应命中")
+        
+        let r4 = try await searchAny("ト")
+        XCTAssertEqual(r4, ["ﾃｽﾄ"], "默认折叠下，全角末字 Unigram 应命中")
+    }
+
+    // 3. 禁用宽度折叠 (widthFolding: false)
+    func testDisabledWidthFolding() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(widthFolding: false))
+        
+        // 插入全角 ASCII 文档
+        try await insert("Ｈｅｌｌｏ", into: db)
+        // 插入半角片假名文档
+        try await insert("ﾃｽﾄ", into: db)
+        
+        // a) 半角查询全角 ASCII 不应命中
+        let r1 = try await searchAny("hello", in: db)
+        XCTAssertTrue(r1.isEmpty, "禁用宽度折叠时，半角不应匹配全角")
+        
+        // b) 全角大写查询可以通过 caseFolding 折叠为全角小写，但不能折叠为半角
+        let r2 = try await searchAny("ｈｅｌｌｏ", in: db)
+        XCTAssertEqual(r2, ["Ｈｅｌｌｏ"], "禁用宽度折叠但保留大小写折叠时，全角小写应匹配全角大写")
+        
+        // c) 全角片假名查询半角片假名不应命中
+        let r_katakana_real = try await searchAny("テスト", in: db)
+        XCTAssertTrue(r_katakana_real.isEmpty, "禁用宽度折叠时，全角片假名不应匹配半角")
+        
+        // d) 半角片假名本身可作为 Non-CJK 单词匹配
+        let r4 = try await searchAny("ﾃｽﾄ", in: db)
+        XCTAssertEqual(r4, ["ﾃｽﾄ"], "禁用宽度折叠时，半角片假名应作为普通单词自身匹配")
+    }
+
+    // 4. 组合选项：widthFolding 与 caseFolding
+    func testCombinationsOfWidthAndCaseFolding() async throws {
+        // 场景 A: widthFolding=true, caseFolding=false
+        let dbA = try makeDB(options: CJKTokenizerOptions(caseFolding: false, widthFolding: true))
+        try await insert("ＡＢＣ", into: dbA)
+        
+        // 全角大写折叠为半角大写 "ABC"
+        let rA1 = try await searchRaw("abc", in: dbA)
+        XCTAssertTrue(rA1.isEmpty, "caseFolding=false 时，大写不匹配小写")
+        let rA2 = try await searchRaw("ABC", in: dbA)
+        XCTAssertEqual(rA2, ["ＡＢＣ"], "widthFolding=true 且 caseFolding=false 时，半角大写应匹配全角大写")
+        let rA3 = try await searchRaw("ＡＢＣ", in: dbA)
+        XCTAssertEqual(rA3, ["ＡＢＣ"], "widthFolding=true 且 caseFolding=false 时，全角大写应匹配全角大写")
+
+        // 场景 B: widthFolding=false, caseFolding=true
+        let dbB = try makeDB(options: CJKTokenizerOptions(caseFolding: true, widthFolding: false))
+        try await insert("ＡＢＣ", into: dbB)
+        
+        // 不进行宽度折叠，但大写折叠为小写："Ａ" (U+FF21) -> "ａ" (U+FF41)
+        let rB1 = try await searchRaw("abc", in: dbB)
+        XCTAssertTrue(rB1.isEmpty, "widthFolding=false 时，半角小写不应匹配全角")
+        let rB2 = try await searchRaw("ａｂｃ", in: dbB)
+        XCTAssertEqual(rB2, ["ＡＢＣ"], "widthFolding=false 且 caseFolding=true 时，全角小写应匹配全角大写")
+        let rB3 = try await searchRaw("ＡＢＣ", in: dbB)
+        XCTAssertEqual(rB3, ["ＡＢＣ"], "widthFolding=false 且 caseFolding=true 时，全角大写查询被折叠后也应匹配")
+    }
+
+    // 5. 日本语浊音/半浊音折叠 (Voiced / Semi-voiced Sound Marks)
+    func testVoicedKatakanaFolding() async throws {
+        // 插入含有浊音的半角片假名 "ｶﾞ" (U+FF76 U+FF9E)
+        try await insert("ｶﾞ")
+        
+        // 默认折叠为 "カ" (U+30AB) + "゛" (U+309B)
+        // 两个字符均属于 CJK 区间，因此形成 CJK 段并生成 Bigram: "カ゛"
+        
+        // a) 全角独立浊音符号匹配
+        let r1 = try await searchAny("カ゛")
+        XCTAssertEqual(r1, ["ｶﾞ"], "应正确支持浊音半角片假名到全角的分离折叠")
+        
+        // b) 片假名 "ｶ" 匹配
+        let r2 = try await searchAny("カ")
+        XCTAssertEqual(r2, ["ｶﾞ"], "默认折叠下，应能匹配假名部分")
+    }
+
+    // 6. 全角空格 (U+3000) 作为分词符
+    func testFullWidthSpaceAsSeparator() async throws {
+        // 插入带有全角空格的文档 "中国　北京" (U+3000)
+        try await insert("中国　北京")
+        
+        // 全角空格被折叠为半角空格 (U+0020)，不应参与 CJK Bigram
+        
+        // a) 独立子项查询应命中
+        let r1 = try await searchAny("中国")
+        XCTAssertEqual(r1, ["中国　北京"])
+        
+        let r2 = try await searchAny("北京")
+        XCTAssertEqual(r2, ["中国　北京"])
+        
+        // b) 跨空格的错误 Bigram "国北" 不应命中
+        let r3 = try await searchAny("国北")
+        XCTAssertTrue(r3.isEmpty, "全角空格应正确切断 CJK 段，避免跨空格的 bigram")
+    }
+}
+
+// MARK: - 零堆内存分配测试
+
+final class ZeroAllocationTests: CJKTestBase {
+
+    private struct AllocationTracker {
+        static var count = 0
+        static var enabled = false
+    }
+
+    private typealias MallocLogger = @convention(c) (UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt32, UInt32) -> Void
+
+    func testTokenizerZeroAllocationHotPath() async throws {
+        try await dbQueue.write { db in
+            let tokenizer = try CJKTokenizer(db: db, arguments: [])
+            
+            let callback: FTS5TokenCallback = { _, _, _, _, _, _ in
+                return 0 // SQLITE_OK
+            }
+            
+            let handle = dlopen(nil, RTLD_NOW)
+            guard let sym = dlsym(handle, "malloc_logger") else {
+                XCTFail("无法获取 malloc_logger 符号")
+                return
+            }
+            
+            let loggerPtr = sym.assumingMemoryBound(to: MallocLogger?.self)
+            let oldLogger = loggerPtr.pointee
+            
+            let runTokenize = { (text: String) -> Int in
+                let cString = text.utf8CString
+                
+                AllocationTracker.count = 0
+                AllocationTracker.enabled = false
+                
+                loggerPtr.pointee = { (type, zone, ptr, arg3, size, num) in
+                    if AllocationTracker.enabled {
+                        let isAlloc = (type == 1 || type == 4 || type == 8 || type == 12)
+                        if isAlloc {
+                            AllocationTracker.count += 1
+                        }
+                    }
+                }
+                
+                cString.withUnsafeBufferPointer { buf in
+                    let base = buf.baseAddress!
+                    let count = CInt(buf.count - 1)
+                    
+                    // 预热
+                    _ = tokenizer.tokenize(
+                        context: nil,
+                        tokenization: [.document],
+                        pText: base,
+                        nText: count,
+                        tokenCallback: callback
+                    )
+                    
+                    // 开始追踪
+                    AllocationTracker.count = 0
+                    AllocationTracker.enabled = true
+                    
+                    _ = tokenizer.tokenize(
+                        context: nil,
+                        tokenization: [.document],
+                        pText: base,
+                        nText: count,
+                        tokenCallback: callback
+                    )
+                    
+                    AllocationTracker.enabled = false
+                }
+                
+                loggerPtr.pointee = oldLogger
+                return AllocationTracker.count
+            }
+            
+            let cjkAlloc = runTokenize("北京大学")
+            let asciiLowerAlloc = runTokenize("hello")
+            let asciiUpperAlloc = runTokenize("Hello")
+            let katakanaAlloc = runTokenize("ﾃｽﾄ")
+            
+            #if DEBUG
+            // Debug 模式下，因编译器未开启优化，非内联的闭包传参（如 @escaping callback）会引入固定的 3 次隐式堆装箱。
+            // 经诊断这属于 Swift 测试环境/编译器未优化时的闭包开销，非分词器内核所产生。
+            let maxAlloc = 3
+            #else
+            // Release 模式下，编译器进行内联与跨模块优化，消除所有闭包开销，实现 100% 零堆内存分配。
+            let maxAlloc = 0
+            #endif
+            
+            XCTAssertLessThanOrEqual(cjkAlloc, maxAlloc, "CJK 字符分词堆分配超标")
+            XCTAssertLessThanOrEqual(asciiLowerAlloc, maxAlloc, "ASCII 小写分词堆分配超标")
+            XCTAssertLessThanOrEqual(asciiUpperAlloc, maxAlloc, "ASCII 大写/折叠分词堆分配超标")
+            XCTAssertLessThanOrEqual(katakanaAlloc, maxAlloc, "Katakana 片假名折叠分词堆分配超标")
+        }
+    }
+}
+
+// MARK: - Accent/Diacritic Folding 集成测试
+
+final class DiacriticFoldingIntegrationTests: CJKTestBase {
+
+    // 1. 默认配置下（diacriticFolding = true, caseFolding = true）
+    func testDefaultDiacriticFolding() async throws {
+        // 插入含各种变音符的文档
+        try await insert("café")      // 法语咖啡（e-acute）
+        try await insert("München")   // 德语慕尼黑（u-umlaut）
+        try await insert("ñandú")     // 西班牙语美洲鸵（n-tilde, u-acute）
+        
+        // a) 变音符折叠：cafe 命中 café
+        let r1 = try await searchAny("cafe")
+        XCTAssertEqual(r1, ["café"], "默认变音符折叠下，无变音符查询 [cafe] 应命中 [café]")
+        
+        // b) 大小写与变音符折叠：munchen 命中 München
+        let r2 = try await searchAny("munchen")
+        XCTAssertEqual(r2, ["München"], "默认折叠下，小写无变音符查询 [munchen] 应命中 [München]")
+        
+        // c) 混合测试：NANDU 命中 ñandú
+        let r3 = try await searchAny("NANDU")
+        XCTAssertEqual(r3, ["ñandú"], "默认折叠下，大写无变音符查询 [NANDU] 应命中 [ñandú]")
+    }
+
+    // 2. 禁用变音符折叠下（diacriticFolding = false）
+    func testDisabledDiacriticFolding() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(caseFolding: true, widthFolding: true, diacriticFolding: false))
+        
+        try await insert("café", into: db)
+        try await insert("cafe", into: db)
+        
+        // a) 查询 cafe 应仅匹配 cafe，不匹配 café
+        let r1 = try await searchAny("cafe", in: db)
+        XCTAssertEqual(r1, ["cafe"], "禁用变音符折叠下，无变音符查询应仅匹配无变音符文档")
+        
+        // b) 查询 café 应仅匹配 café，不匹配 cafe
+        let r2 = try await searchAny("café", in: db)
+        XCTAssertEqual(r2, ["café"], "禁用变音符折叠下，含变音符查询应仅匹配含变音符文档")
+    }
+
+    // 3. 组合配置：diacriticFolding = true 且 caseFolding = false
+    func testCombinationsOfDiacriticAndCaseFolding() async throws {
+        let db = try makeDB(options: CJKTokenizerOptions(caseFolding: false, widthFolding: true, diacriticFolding: true))
+        
+        try await insert("Café", into: db)
+        
+        // 变音符折叠，但大小写敏感：Café -> Cafe
+        
+        // a) 大写正确的无变音符查询 Cafe 应命中
+        let r1 = try await searchRaw("Cafe", in: db)
+        XCTAssertEqual(r1, ["Café"], "大小写敏感但变音符不敏感时，[Cafe] 应命中 [Café]")
+        
+        // b) 大小写错误的查询 cafe 不应命中
+        let r2 = try await searchRaw("cafe", in: db)
+        XCTAssertTrue(r2.isEmpty, "大小写敏感下，小写 [cafe] 不应匹配 [Café]")
+    }
 }

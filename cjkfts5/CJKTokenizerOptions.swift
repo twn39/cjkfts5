@@ -27,9 +27,28 @@ public struct CJKTokenizerOptions: Sendable {
     /// - `false`：保留原始大小写
     public var caseFolding: Bool
 
-    public init(emitUnigrams: Bool = true, caseFolding: Bool = true) {
+    /// 是否进行 Unicode 宽度正规化（全角转半角，半角假名转全角假名）。
+    ///
+    /// - `true`（默认）：全半角混排文本可互相搜索（"１２３"与"123"、"ﾃｽﾄ"与"测试"均命中）
+    /// - `false`：保留原始宽度，全角半角不互通
+    public var widthFolding: Bool
+
+    /// 是否对非 CJK token（ASCII / Latin）进行变音符折叠。
+    ///
+    /// - `true`（默认）：变音符不敏感搜索（"café" 和 "cafe" 均命中）
+    /// - `false`：保留变音符，严格匹配
+    public var diacriticFolding: Bool
+
+    public init(
+        emitUnigrams: Bool = true,
+        caseFolding: Bool = true,
+        widthFolding: Bool = true,
+        diacriticFolding: Bool = true
+    ) {
         self.emitUnigrams = emitUnigrams
         self.caseFolding = caseFolding
+        self.widthFolding = widthFolding
+        self.diacriticFolding = diacriticFolding
     }
 
     // MARK: 内部：与 FTS5 arguments 字符串互转
@@ -39,6 +58,8 @@ public struct CJKTokenizerOptions: Sendable {
         var args: [String] = []
         if !emitUnigrams { args.append("no_unigram") }
         if !caseFolding  { args.append("no_case_fold") }
+        if !widthFolding { args.append("no_width_fold") }
+        if !diacriticFolding { args.append("no_diacritic_fold") }
         return args
     }
 
@@ -46,5 +67,7 @@ public struct CJKTokenizerOptions: Sendable {
     init(arguments: [String]) {
         emitUnigrams = !arguments.contains("no_unigram")
         caseFolding  = !arguments.contains("no_case_fold")
+        widthFolding = !arguments.contains("no_width_fold")
+        diacriticFolding = !arguments.contains("no_diacritic_fold")
     }
 }

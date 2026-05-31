@@ -49,12 +49,16 @@ extension FTS5TokenizerDescriptor {
     /// - Returns: 可赋值给 `FTS5TableDefinition.tokenizer` 的描述符。
     public static func cjk(
         emitUnigrams: Bool = true,
-        caseFolding: Bool = true
+        caseFolding: Bool = true,
+        widthFolding: Bool = true,
+        diacriticFolding: Bool = true
     ) -> FTS5TokenizerDescriptor {
         CJKTokenizer.tokenizerDescriptor(
             options: CJKTokenizerOptions(
                 emitUnigrams: emitUnigrams,
-                caseFolding: caseFolding
+                caseFolding: caseFolding,
+                widthFolding: widthFolding,
+                diacriticFolding: diacriticFolding
             )
         )
     }

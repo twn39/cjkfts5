@@ -246,4 +246,159 @@ enum CJKUnicode {
             return nil
         }
     }
+
+    // MARK: - UInt32 快速重载（热路径优化，避免 Unicode.Scalar 实例化开销）
+
+    /// 基于 UInt32 原始码点直接解码 UTF-8 字节，避免 Unicode.Scalar 实例化校验
+    @inline(__always)
+    static func decodeCodepoint(
+        _ bytes: UnsafeRawBufferPointer,
+        at offset: Int
+    ) -> (UInt32, Int)? {
+        guard offset < bytes.count else { return nil }
+        let b0 = bytes[offset]
+
+        switch b0 {
+
+        // ── 1 字节：ASCII U+0000–U+007F ──────────────────────────────────────
+        case 0x00...0x7F:
+            return (UInt32(b0), 1)
+
+        // ── 2 字节：U+0080–U+07FF ─────────────────────────────────────────────
+        case 0xC2...0xDF:
+            guard offset + 1 < bytes.count else { return nil }
+            let b1 = bytes[offset + 1]
+            guard b1 & 0xC0 == 0x80 else { return nil }
+            let v = UInt32(b0 & 0x1F) << 6 | UInt32(b1 & 0x3F)
+            return (v, 2)
+
+        // ── 3 字节：U+0800–U+FFFF ────────────────────────────────────────────
+        case 0xE0...0xEF:
+            guard offset + 2 < bytes.count else { return nil }
+            let b1 = bytes[offset + 1]
+            let b2 = bytes[offset + 2]
+            guard b2 & 0xC0 == 0x80 else { return nil }
+
+            switch b0 {
+            case 0xE0:
+                guard b1 >= 0xA0 && b1 <= 0xBF else { return nil }
+            case 0xED:
+                guard b1 >= 0x80 && b1 <= 0x9F else { return nil }
+            default:
+                guard b1 & 0xC0 == 0x80 else { return nil }
+            }
+
+            let v = UInt32(b0 & 0x0F) << 12 | UInt32(b1 & 0x3F) << 6 | UInt32(b2 & 0x3F)
+            return (v, 3)
+
+        // ── 4 字节：U+10000–U+10FFFF ──────────────────────────────────────────
+        case 0xF0...0xF4:
+            guard offset + 3 < bytes.count else { return nil }
+            let b1 = bytes[offset + 1]
+            let b2 = bytes[offset + 2]
+            let b3 = bytes[offset + 3]
+            guard b2 & 0xC0 == 0x80, b3 & 0xC0 == 0x80 else { return nil }
+
+            switch b0 {
+            case 0xF0:
+                guard b1 >= 0x90 && b1 <= 0xBF else { return nil }
+            case 0xF4:
+                guard b1 >= 0x80 && b1 <= 0x8F else { return nil }
+            default:
+                guard b1 & 0xC0 == 0x80 else { return nil }
+            }
+
+            let v = UInt32(b0 & 0x07) << 18 | UInt32(b1 & 0x3F) << 12
+                  | UInt32(b2 & 0x3F) << 6  | UInt32(b3 & 0x3F)
+            return (v, 4)
+
+        default:
+            return nil
+        }
+    }
+
+    /// 基于 UInt32 码点的 CJK 范围快速判断
+    @inline(__always)
+    static func isCJKCodepoint(_ v: UInt32) -> Bool {
+        // ── 热路径：最高频范围优先 ──────────────────────────────────────────
+        if v >= 0x4E00  && v <= 0x9FFF  { return true }   // CJK 统一汉字
+        if v >= 0xAC00  && v <= 0xD7AF  { return true }   // 韩文音节
+        if v >= 0x3040  && v <= 0x30FF  { return true }   // 平假名 + 片假名
+
+        // ── 次热路径：BMP 补充范围 ─────────────────────────────────────────
+        if v >= 0x3400  && v <= 0x4DBF  { return true }   // CJK 扩展 A
+        if v >= 0xF900  && v <= 0xFAFF  { return true }   // CJK 兼容汉字
+        if v >= 0x1100  && v <= 0x11FF  { return true }   // 韩文 Jamo
+        if v >= 0x3130  && v <= 0x318F  { return true }   // 韩文兼容 Jamo
+        if v >= 0x31F0  && v <= 0x31FF  { return true }   // 片假名扩展
+
+        // ── SMP 日文和 CJK 扩展区块 ──────────────────────────────────────────
+        if v >= 0x1AFF0 && v <= 0x1AFFF { return true }
+        if v >= 0x1B000 && v <= 0x1B16F { return true }
+        if v >= 0x20000 && v <= 0x2A6DF { return true }   // CJK 扩展 B
+        if v >= 0x2A700 && v <= 0x2B73F { return true }   // CJK 扩展 C
+        if v >= 0x2B740 && v <= 0x2B81F { return true }   // CJK 扩展 D
+        if v >= 0x2B820 && v <= 0x2CEAF { return true }   // CJK 扩展 E
+        if v >= 0x2CEB0 && v <= 0x2EBEF { return true }   // CJK 扩展 F
+        if v >= 0x2EBF0 && v <= 0x2EE5F { return true }   // CJK 扩展 I
+        if v >= 0x30000 && v <= 0x3134F { return true }   // CJK 扩展 G
+        if v >= 0x31350 && v <= 0x323AF { return true }   // CJK 扩展 H
+
+        return false
+    }
+
+    /// 基于 UInt32 码点的词字符判断（热路径 ASCII 快速通过）
+    @inline(__always)
+    static func isWordCodepoint(_ v: UInt32) -> Bool {
+        if v <= 127 {
+            // ASCII 字母: a-z, A-Z
+            if (v >= 0x61 && v <= 0x7A) || (v >= 0x41 && v <= 0x5A) { return true }
+            // ASCII 数字: 0-9
+            if v >= 0x30 && v <= 0x39 { return true }
+            return false
+        }
+        // 全角数字０–９
+        if v >= 0xFF10 && v <= 0xFF19 { return true }
+        // 非 ASCII 且非常用 CJK 字符时，安全转换为 Scalar 检查 properties.isAlphabetic
+        guard let s = Unicode.Scalar(v) else { return false }
+        return s.properties.isAlphabetic
+    }
+
+    // MARK: - 片假名全半角折叠静态表与折叠方法
+
+    private static let katakanaFoldTable: [UInt32] = [
+        0x3002, 0x300C, 0x300D, 0x3001, 0x30FB, 0x30F2, 0x30A1, 0x30A3, // FF61 - FF68
+        0x30A5, 0x30A7, 0x30A9, 0x30E3, 0x30E5, 0x30E7, 0x30C3, 0x30FC, // FF69 - FF70
+        0x30A2, 0x30A4, 0x30A6, 0x30A8, 0x30AA, 0x30AB, 0x30AD, 0x30AF, // FF71 - FF78
+        0x30B1, 0x30B3, 0x30B5, 0x30B7, 0x30B9, 0x30BB, 0x30BD, 0x30BF, // FF79 - FF80
+        0x30C1, 0x30C4, 0x30C6, 0x30C8, 0x30CA, 0x30CB, 0x30CC, 0x30CD, // FF81 - FF88
+        0x30CE, 0x30CF, 0x30D2, 0x30D5, 0x30D8, 0x30DB, 0x30DE, 0x30DF, // FF89 - FF96
+        0x30E0, 0x30E1, 0x30E2, 0x30E4, 0x30E6, 0x30E8, 0x30E9, 0x30EA, // FF97 - FF9E
+        0x30EB, 0x30EC, 0x30ED, 0x30EF, 0x30F3, 0x309B, 0x309C          // FF99 - FF9F
+    ]
+
+    /// 基于 UInt32 码点进行全半角折叠（全角 ASCII -> 半角，半角片假名 -> 全角）
+    @inline(__always)
+    static func foldWidth(_ v: UInt32) -> UInt32 {
+        // 1. 全角 ASCII (U+FF01-U+FF5E) -> 半角 ASCII (U+0021-U+007E)
+        if v >= 0xFF01 && v <= 0xFF5E {
+            return v - 0xFF01 + 0x0021
+        }
+        // 全角空格 (U+3000) -> 半角空格 (U+0020)
+        if v == 0x3000 {
+            return 0x0020
+        }
+        // 2. 半角片假名 (U+FF61-U+FF9F) -> 全角片假名
+        if v >= 0xFF61 && v <= 0xFF9F {
+            let idx = Int(v - 0xFF61)
+            return katakanaFoldTable[idx]
+        }
+        return v
+    }
+
+    /// 判断字符是否是半角片假名或需要折叠的片假名符号
+    @inline(__always)
+    static func isHalfWidthKatakana(_ v: UInt32) -> Bool {
+        return v >= 0xFF61 && v <= 0xFF9F
+    }
 }
