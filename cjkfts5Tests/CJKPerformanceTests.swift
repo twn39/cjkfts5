@@ -430,3 +430,87 @@ final class ZeroAllocationTests: CJKTestBase {
         }
     }
 }
+
+final class TokenizerBenchmarkTests: CJKTestBase {
+    
+    func testTokenizerThroughput() async throws {
+        try await dbQueue.write { db in
+            // 生成具有代表性的 CJK 与 ASCII 混合的 500 KB 文本语料库
+            let baseParagraph = """
+            基于 Bigram + Unigram 混合策略的通用 CJK（中文/日文/韩文）FTS5 分词器，专为 GRDB 设计。
+            它是一个零依赖的纯 Swift 实现，无 C++ 或任何词典文件。它具有零初始化延迟和完美的 Token 对称性，
+            使短语匹配在 MATCH 查询中能够完美且精确地命中。
+            The quick brown fox jumps over the lazy dog. Swift is a high-performance general-purpose programming language.
+            本分词器支持中日韩所有汉字、平假名、片假名、韩文音节、字母以及全部 unicode 扩展集。
+            在停用词过滤开启时，核心热路径依然实现 100% 零堆内存分配，具有极佳的缓存局部性。
+            """
+            
+            let repeatCount = 1000
+            var fullCorpus = ""
+            fullCorpus.reserveCapacity(baseParagraph.count * repeatCount)
+            for _ in 0..<repeatCount {
+                fullCorpus.append(baseParagraph)
+                fullCorpus.append("\n")
+            }
+            
+            let corpusData = Data(fullCorpus.utf8)
+            let corpusSizeInMB = Double(corpusData.count) / (1024.0 * 1024.0)
+            
+            let tokenizer = try CJKTokenizer(db: db, arguments: [])
+            
+            let callback: FTS5TokenCallback = { _, _, _, _, _, _ in
+                return 0 // SQLITE_OK
+            }
+            
+            let cString = fullCorpus.utf8CString
+            
+            // 预热
+            cString.withUnsafeBufferPointer { buf in
+                let base = buf.baseAddress!
+                let count = CInt(buf.count - 1)
+                _ = tokenizer.tokenize(
+                    context: nil,
+                    tokenization: [.document],
+                    pText: base,
+                    nText: count,
+                    tokenCallback: callback
+                )
+            }
+            
+            // 测量耗时
+            let start = CFAbsoluteTimeGetCurrent()
+            
+            cString.withUnsafeBufferPointer { buf in
+                let base = buf.baseAddress!
+                let count = CInt(buf.count - 1)
+                _ = tokenizer.tokenize(
+                    context: nil,
+                    tokenization: [.document],
+                    pText: base,
+                    nText: count,
+                    tokenCallback: callback
+                )
+            }
+            
+            let end = CFAbsoluteTimeGetCurrent()
+            let duration = end - start
+            let throughput = corpusSizeInMB / duration
+            
+            let resultText = """
+            # CJKTokenizer Performance Benchmark Results
+            
+            - **Corpus Size**: \(String(format: "%.2f", corpusSizeInMB)) MB (\(corpusData.count) bytes)
+            - **Total Time**: \(String(format: "%.2f", duration * 1000.0)) ms
+            - **Throughput**: \(String(format: "%.2f", throughput)) MB/s
+            """
+            
+            print("🚀🚀🚀 [BENCHMARK RESULTS] 🚀🚀🚀")
+            print(resultText)
+            print("🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀")
+            
+            try? resultText.write(toFile: "/Users/2342184/programs/cjkfts5/benchmark_results.md", atomically: true, encoding: .utf8)
+        }
+    }
+}
+
+
