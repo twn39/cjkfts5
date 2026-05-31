@@ -148,6 +148,7 @@ let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 
 ## 性能
 
+### 1. 架构特性对比
 | 指标 | CJKTokenizer | jieba Tokenizer | SQLite Trigram |
 |---|---|---|---|
 | 初始化延迟 | **0 ms** | 100-300 ms | 0 ms |
@@ -156,6 +157,32 @@ let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 | 最小可命中查询长度 | **1 字** | 取决于分词 | **3 字** |
 | 线程安全 | **天然** | 需 mutex | 天然 |
 | 内存热路径分配数 | **0 次 (100% 零堆分配)** | 频繁 malloc | 0 次 |
+
+### 2. 吞吐性能基准测试 (Release 模式)
+我们在 macOS (10 Cores) 下，使用 **3.24 MB (3,393,890 字节)** 的中英混合语料库，对分词及 FTS5 写入性能进行了全面基准测试。详见完整报告：[benchmark_results.md](benchmark_results.md)。
+
+#### 维度 A：直接分词吞吐率 (Raw Tokenizer Throughput)
+> 测量直接调用分词器进行分词的纯粹 CPU 吞吐性能（不含 SQLite 数据库写入开销）。
+
+| 分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
+| :--- | :---: | :---: |
+| CJK (Default) | 21.50 | **150.51** |
+| CJK (No Unigrams) | 19.96 | **162.13** |
+| CJK (With Stopwords) | 49.35 | **65.58** |
+| CJK (No Folding) | 21.54 | **150.24** |
+
+#### 维度 B：FTS5 数据库表写入与索引吞吐率 (FTS5 Indexing Throughput)
+> 测量在真实 SQLite 事务中，批量插入并建立 FTS5 索引的端到端吞吐性能（含数据库 I/O 与 FTS5 树更新）。
+
+| 虚拟表分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
+| :--- | :---: | :---: |
+| **CJK (Default)** | 108.17 | **29.92** |
+| **CJK (No Unigrams)** | 75.31 | **42.98** |
+| **CJK (With Stopwords)** | 122.57 | **26.41** |
+| **SQLite unicode61** (内置) | 69.09 | **46.85** |
+| **SQLite trigram** (内置) | 136.84 | **23.65** |
+
+*注：`CJKTokenizer (Default)` 在保证中日韩精确短语检索与 1 字索引的前提下，写入吞吐速率仍显著超越了 SQLite 官方内置的 `trigram` 分词器（**23.65 MB/s**）。*
 
 ## 与工业界标准对齐
 
