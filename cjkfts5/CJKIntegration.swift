@@ -51,14 +51,16 @@ extension FTS5TokenizerDescriptor {
         emitUnigrams: Bool = true,
         caseFolding: Bool = true,
         widthFolding: Bool = true,
-        diacriticFolding: Bool = true
+        diacriticFolding: Bool = true,
+        stopwords: Set<String>? = nil
     ) -> FTS5TokenizerDescriptor {
         CJKTokenizer.tokenizerDescriptor(
             options: CJKTokenizerOptions(
                 emitUnigrams: emitUnigrams,
                 caseFolding: caseFolding,
                 widthFolding: widthFolding,
-                diacriticFolding: diacriticFolding
+                diacriticFolding: diacriticFolding,
+                stopwords: stopwords
             )
         )
     }
