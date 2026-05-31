@@ -433,83 +433,158 @@ final class ZeroAllocationTests: CJKTestBase {
 
 final class TokenizerBenchmarkTests: CJKTestBase {
     
-    func testTokenizerThroughput() async throws {
-        try await dbQueue.write { db in
-            // 生成具有代表性的 CJK 与 ASCII 混合的 500 KB 文本语料库
-            let baseParagraph = """
-            基于 Bigram + Unigram 混合策略的通用 CJK（中文/日文/韩文）FTS5 分词器，专为 GRDB 设计。
-            它是一个零依赖的纯 Swift 实现，无 C++ 或任何词典文件。它具有零初始化延迟和完美的 Token 对称性，
-            使短语匹配在 MATCH 查询中能够完美且精确地命中。
-            The quick brown fox jumps over the lazy dog. Swift is a high-performance general-purpose programming language.
-            本分词器支持中日韩所有汉字、平假名、片假名、韩文音节、字母以及全部 unicode 扩展集。
-            在停用词过滤开启时，核心热路径依然实现 100% 零堆内存分配，具有极佳的缓存局部性。
-            """
+    func testCompleteBenchmarkSuite() async throws {
+        // 1. 准备 5,000 条混合中英文测试文档（总大小约 2.6 MB）
+        let baseParagraph = """
+        基于 Bigram + Unigram 混合策略的通用 CJK（中文/日文/韩文）FTS5 分词器，专为 GRDB 设计。
+        它是一个零依赖的纯 Swift 实现，无 C++ 或任何词典文件。它具有零初始化延迟和完美的 Token 对称性，
+        使短语匹配在 MATCH 查询中能够完美且精确地命中。
+        The quick brown fox jumps over the lazy dog. Swift is a high-performance general-purpose programming language.
+        本分词器支持中日韩所有汉字、平假名、片假名、韩文音节、字母以及全部 unicode 扩展集。
+        在停用词过滤开启时，核心热路径依然实现 100% 零堆内存分配，具有极佳的缓存局部性。
+        """
+        
+        let docCount = 5000
+        let documents: [String] = {
+            var docs: [String] = []
+            docs.reserveCapacity(docCount)
+            for i in 0..<docCount {
+                docs.append("\(baseParagraph) [DocID: \(i)]")
+            }
+            return docs
+        }()
+        
+        let totalBytes = documents.reduce(0) { $0 + $1.utf8.count }
+        let totalSizeMB = Double(totalBytes) / (1024.0 * 1024.0)
+        
+        // 停用词设置
+        let stopwords = CJKTokenizerOptions.englishStopwords.union(CJKTokenizerOptions.chineseStopwords)
+        
+        // ───── 维度 A：直接分词测试 ─────
+        let rawResults: [(name: String, timeMs: Double, throughput: Double)] = try await dbQueue.write { db in
+            let largeText = documents.joined(separator: "\n")
+            let cString = largeText.utf8CString
             
-            let repeatCount = 1000
-            var fullCorpus = ""
-            fullCorpus.reserveCapacity(baseParagraph.count * repeatCount)
-            for _ in 0..<repeatCount {
-                fullCorpus.append(baseParagraph)
-                fullCorpus.append("\n")
+            let runRawBench = { (name: String, args: [String]) throws -> (String, Double, Double) in
+                let tokenizer = try CJKTokenizer(db: db, arguments: args)
+                let callback: FTS5TokenCallback = { _, _, _, _, _, _ in return 0 }
+                
+                // 预热
+                cString.withUnsafeBufferPointer { buf in
+                    _ = tokenizer.tokenize(context: nil, tokenization: [.document], pText: buf.baseAddress!, nText: CInt(buf.count - 1), tokenCallback: callback)
+                }
+                
+                let start = CFAbsoluteTimeGetCurrent()
+                cString.withUnsafeBufferPointer { buf in
+                    _ = tokenizer.tokenize(context: nil, tokenization: [.document], pText: buf.baseAddress!, nText: CInt(buf.count - 1), tokenCallback: callback)
+                }
+                let end = CFAbsoluteTimeGetCurrent()
+                let duration = end - start
+                return (name, duration * 1000.0, totalSizeMB / duration)
             }
             
-            let corpusData = Data(fullCorpus.utf8)
-            let corpusSizeInMB = Double(corpusData.count) / (1024.0 * 1024.0)
+            let r1 = try runRawBench("CJK (Default)", [])
+            let r2 = try runRawBench("CJK (No Unigrams)", ["no_unigram"])
+            let r3 = try runRawBench("CJK (With Stopwords)", ["stopwords", stopwords.sorted().joined(separator: ",")])
+            let r4 = try runRawBench("CJK (No Folding)", ["no_case_fold", "no_width_fold", "no_diacritic_fold"])
             
-            let tokenizer = try CJKTokenizer(db: db, arguments: [])
-            
-            let callback: FTS5TokenCallback = { _, _, _, _, _, _ in
-                return 0 // SQLITE_OK
+            return [
+                (r1.0, r1.1, r1.2),
+                (r2.0, r2.1, r2.2),
+                (r3.0, r3.1, r3.2),
+                (r4.0, r4.1, r4.2)
+            ]
+        }
+        
+        // ───── 维度 B：FTS5 数据库表写入与索引测试 ─────
+        let runIndexBench = { (name: String, descriptor: FTS5TokenizerDescriptor) -> (String, Double, Double) in
+            var config = Configuration()
+            config.prepareDatabase { db in
+                db.add(tokenizer: CJKTokenizer.self)
+            }
+            guard let db = try? DatabaseQueue(configuration: config) else {
+                return (name, 0.0, 0.0)
             }
             
-            let cString = fullCorpus.utf8CString
+            let tableName = "docs_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
             
-            // 预热
-            cString.withUnsafeBufferPointer { buf in
-                let base = buf.baseAddress!
-                let count = CInt(buf.count - 1)
-                _ = tokenizer.tokenize(
-                    context: nil,
-                    tokenization: [.document],
-                    pText: base,
-                    nText: count,
-                    tokenCallback: callback
-                )
+            try? db.write { db in
+                try db.create(virtualTable: tableName, using: FTS5()) { t in
+                    t.tokenizer = descriptor
+                    t.column("content")
+                }
             }
             
-            // 测量耗时
             let start = CFAbsoluteTimeGetCurrent()
-            
-            cString.withUnsafeBufferPointer { buf in
-                let base = buf.baseAddress!
-                let count = CInt(buf.count - 1)
-                _ = tokenizer.tokenize(
-                    context: nil,
-                    tokenization: [.document],
-                    pText: base,
-                    nText: count,
-                    tokenCallback: callback
-                )
+            try? db.write { db in
+                for doc in documents {
+                    try db.execute(sql: "INSERT INTO \(tableName)(content) VALUES (?)", arguments: [doc])
+                }
             }
-            
             let end = CFAbsoluteTimeGetCurrent()
             let duration = end - start
-            let throughput = corpusSizeInMB / duration
-            
-            let resultText = """
-            # CJKTokenizer Performance Benchmark Results
-            
-            - **Corpus Size**: \(String(format: "%.2f", corpusSizeInMB)) MB (\(corpusData.count) bytes)
-            - **Total Time**: \(String(format: "%.2f", duration * 1000.0)) ms
-            - **Throughput**: \(String(format: "%.2f", throughput)) MB/s
-            """
-            
-            print("🚀🚀🚀 [BENCHMARK RESULTS] 🚀🚀🚀")
-            print(resultText)
-            print("🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀")
-            
-            try? resultText.write(toFile: "/Users/2342184/programs/cjkfts5/benchmark_results.md", atomically: true, encoding: .utf8)
+            return (name, duration * 1000.0, totalSizeMB / duration)
         }
+        
+        let i1 = runIndexBench("CJK (Default)", .cjk())
+        let i2 = runIndexBench("CJK (No Unigrams)", .cjk(emitUnigrams: false))
+        let i3 = runIndexBench("CJK (With Stopwords)", .cjk(stopwords: stopwords))
+        let i4 = runIndexBench("SQLite unicode61", .unicode61())
+        let i5 = runIndexBench("SQLite trigram", FTS5TokenizerDescriptor(components: ["trigram"]))
+        
+        let indexResults = [
+            (i1.0, i1.1, i1.2),
+            (i2.0, i2.1, i2.2),
+            (i3.0, i3.1, i3.2),
+            (i4.0, i4.1, i4.2),
+            (i5.0, i5.1, i5.2)
+        ]
+        
+        // 生成 Markdown 报告
+        var mdReport = """
+        # CJKTokenizer Complete Performance Benchmark Report
+        
+        - **Corpus Details**: Mixed Chinese/English text, \(docCount) documents.
+        - **Corpus Size**: \(String(format: "%.2f", totalSizeMB)) MB (\(totalBytes) bytes).
+        - **Platform**: \(ProcessInfo.processInfo.operatingSystemVersionString) (\(ProcessInfo.processInfo.activeProcessorCount) Cores).
+        
+        ---
+        
+        ## 维度 A：直接分词吞吐率 (Raw Tokenizer Throughput)
+        > 测量直接调用分词器进行分词的纯粹 CPU 吞吐性能（不含 SQLite 数据库写入开销）。
+        
+        | 分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
+        | :--- | :---: | :---: |
+        """
+        
+        for res in rawResults {
+            mdReport += "\n| \(res.0) | \(String(format: "%.2f", res.1)) | \(String(format: "%.2f", res.2)) |"
+        }
+        
+        mdReport += """
+        
+        
+        ## 维度 B：FTS5 数据库表写入与索引吞吐率 (FTS5 Indexing Throughput)
+        > 测量在真实 SQLite 事务中，批量插入并建立 FTS5 索引的端到端吞吐性能（含数据库 I/O 与 FTS5 树更新）。
+        
+        | 虚拟表分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
+        | :--- | :---: | :---: |
+        """
+        
+        for res in indexResults {
+            if res.1 > 0 {
+                mdReport += "\n| \(res.0) | \(String(format: "%.2f", res.1)) | \(String(format: "%.2f", res.2)) |"
+            } else {
+                mdReport += "\n| \(res.0) | N/A (不支持) | N/A |"
+            }
+        }
+        
+        mdReport += "\n\n*(测试结果在运行时自动计算生成)*\n"
+        
+        print("🚀🚀🚀 [BENCHMARK SUITE COMPLETED] 🚀🚀🚀")
+        print(mdReport)
+        
+        try? mdReport.write(toFile: "/Users/2342184/programs/cjkfts5/benchmark_results.md", atomically: true, encoding: .utf8)
     }
 }
 
