@@ -12,11 +12,12 @@
 
 - 🚀 **零依赖** — 纯 Swift 实现，无 C++ / 词典文件
 - ⚡️ **零初始化延迟** — 无状态设计，实例化即用
-- 🌏 **真正通用的 CJK 覆盖** — 中文（简/繁）、日文（汉字/假名）、韩文（谚文）
+- 🌏 **真正通用的 CJK 覆盖** — 中文（简/繁，含扩展 A-I、扩展 H）、日文（汉字/假名/SMP 补充假名块）、韩文（谚文）
 - ✅ **完美 Token 对称性** — 索引和查询使用完全相同的分词逻辑
 - 🔍 **正确的短语匹配** — bigram 按序列位置发出，`matchingPhrase` 语义正确
 - 🔒 **线程安全** — 无共享可变状态，并发调用无需加锁
-- 🔧 **可配置** — 支持 `no_unigram`、`no_case_fold` 等选项
+- 🔧 **停用词过滤 (Stopwords)** — 100% 零堆分配的高性能过滤，支持位置自适应晋升机制，防止 Phrase 搜索位置错位
+- ⚙️ **可配置** — 支持 `no_unigram`、`no_case_fold`、`no_width_fold`、`no_diacritic_fold` 等选项
 
 ## 算法
 
@@ -80,7 +81,9 @@ let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
 ```swift
 try dbQueue.write { db in
     try db.create(virtualTable: "documents", using: FTS5()) { t in
-        t.tokenizer = .cjk()              // 与 .unicode61()、.porter() 风格一致
+        // 默认启用中英文常用停用词过滤与宽度/大小写折叠
+        let stopwords = CJKTokenizerOptions.englishStopwords.union(CJKTokenizerOptions.chineseStopwords)
+        t.tokenizer = .cjk(stopwords: stopwords) 
         t.column("title")
         t.column("body")
     }
@@ -106,8 +109,11 @@ let docs2 = try Document.matching(anyPattern).fetchAll(db)
 ## 配置选项
 
 ```swift
-// 默认配置（推荐）
+// 默认配置（推荐，全折叠启用）
 t.tokenizer = .cjk()
+
+// 启用自定义停用词过滤
+t.tokenizer = .cjk(stopwords: ["的", "关于", "the"])
 
 // 关闭单字 unigram（减小约 30% 索引体积，但单字查询失效）
 t.tokenizer = .cjk(emitUnigrams: false)
@@ -115,7 +121,10 @@ t.tokenizer = .cjk(emitUnigrams: false)
 // 关闭大小写折叠（大小写敏感搜索）
 t.tokenizer = .cjk(caseFolding: false)
 
-// 调试分词结果（可组合性）
+// 关闭宽度折叠（全半角隔离）
+t.tokenizer = .cjk(widthFolding: false)
+
+// 调试分词结果
 let tokenizer = try db.makeTokenizer(.cjk())
 let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 // → [("清华", []), ("华大", []), ("大学", []), ("学", []), ("hello", [])]
@@ -127,11 +136,15 @@ let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 |---|---|
 | U+4E00–U+9FFF | CJK 统一汉字（中文/日文汉字，最常用）|
 | U+3400–U+4DBF | CJK 统一汉字扩展 A |
-| U+20000–U+2A6DF | CJK 统一汉字扩展 B（生僻字）|
+| U+20000–U+2EE5F | CJK 统一汉字扩展 B–I（含扩展 C, D, E, F, I 生僻字，Unicode 15.1）|
+| U+30000–U+323AF | CJK 统一汉字扩展 G–H（含扩展 H，Unicode 15.0）|
 | U+F900–U+FAFF | CJK 兼容汉字 |
-| U+3040–U+309F | 平假名 Hiragana |
-| U+30A0–U+30FF | 片假名 Katakana |
-| U+AC00–U+D7AF | 韩文音节 Hangul |
+| U+3040–U+30FF | 平假名 Hiragana / 片假名 Katakana |
+| U+31F0–U+31FF | 片假名拼音扩展（爱努语） |
+| U+1B000–U+1B16F | SMP 假名补充块（Katakana Supplement / Kana Ext-A / Small Kana）|
+| U+1AFF0–U+1AFFF | Kana Extended-B（台湾假名）|
+| U+AC00–U+D7AF | 韩文音节 Hangul Syllables |
+| U+1100–U+11FF / U+3130–U+318F | 韩文 Jamo / 韩文兼容 Jamo |
 
 ## 性能
 
@@ -142,6 +155,7 @@ let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 | 索引复杂度 | **O(n)** | O(n·dict) | O(n) |
 | 最小可命中查询长度 | **1 字** | 取决于分词 | **3 字** |
 | 线程安全 | **天然** | 需 mutex | 天然 |
+| 内存热路径分配数 | **0 次 (100% 零堆分配)** | 频繁 malloc | 0 次 |
 
 ## 与工业界标准对齐
 
@@ -159,9 +173,15 @@ cjkfts5/
 │   ├── CJKTokenizer.swift           # 核心分词器（FTS5CustomTokenizer）
 │   ├── CJKTokenizerOptions.swift    # 配置选项类型
 │   ├── CJKUnicodeHelper.swift       # Unicode 范围判断 & 字节偏移工具
+│   ├── StopwordSet.swift            # 停用词扁平连续内存与二分查找容器
 │   └── CJKIntegration.swift         # GRDB 集成便捷 API（.cjk()、addCJKTokenizer()）
 ├── cjkfts5Tests/
-│   └── CJKTokenizerTests.swift      # 单元测试套件（113 个用例，11 个测试类）
+│   ├── CJKTokenizerTests.swift      # 基础基类与分词核心搜索测试
+│   ├── CJKUnicodeFoldingTests.swift  # 大小写折叠集成测试
+│   ├── CJKUnicodeHelperTests.swift   # Unicode 范围及编解码单元测试
+│   ├── CJKWidthAndDiacriticTests.swift # 宽度与变音符折叠集成测试
+│   ├── CJKStopwordTests.swift       # 停用词过滤与位置晋升集成测试
+│   └── CJKPerformanceTests.swift    # 多线程并发与零堆分配性能回归测试
 ├── .github/workflows/
 │   └── ci.yml                       # CI 矩阵：Swift 5.9/5.10/6.0 × GRDB 7.x
 └── docs/
