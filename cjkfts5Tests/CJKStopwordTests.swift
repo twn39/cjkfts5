@@ -98,6 +98,19 @@ final class StopwordTests: CJKTestBase {
         XCTAssertEqual(r3, ["book"])
     }
 
+    // 4b. 测试停用词位于中间时的 Phrase Search 连续匹配
+    func testStopwordsInMiddlePhraseQuery() async throws {
+        let stopwords: Set<String> = ["关于"]
+        let db = try makeDB(options: CJKTokenizerOptions(stopwords: stopwords))
+        
+        try await insert("北京关于上海", into: db)
+        
+        // 查询 "北京关于上海"
+        let r1 = try await search("北京关于上海", in: db)
+        XCTAssertEqual(r1, ["北京关于上海"], "停用词在中间时，Phrase 搜索仍应正确命中")
+    }
+
+
     // 5. 停用词 100% 零堆分配测试
     func testStopwordsZeroAllocation() async throws {
         let stopwords = CJKTokenizerOptions.englishStopwords.union(CJKTokenizerOptions.chineseStopwords)

@@ -250,7 +250,9 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
 
                     // 发射 Bigram (带有停用词过滤与 Unigram 晋升)
                     let bigramStop = isBigramStopword(cp0: cp0, cp1: cp1)
-                    let emitUni = options.emitUnigrams && !isQuery
+                    // 当 bigram 遭遇停用词过滤时，为了保证 Phrase 搜索时 query 与 doc 的 position 一致，
+                    // 即使是 Query 模式（isQuery=true）也必须允许 unigram 晋升发射。
+                    let emitUni = (options.emitUnigrams && !isQuery) || (bigramStop && options.emitUnigrams)
                     let unigramStop = emitUni ? isUnigramStopword(cp: cp0) : true
 
                     if !bigramStop || !unigramStop {
