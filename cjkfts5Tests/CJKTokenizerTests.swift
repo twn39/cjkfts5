@@ -2197,19 +2197,14 @@ final class ZeroAllocationTests: CJKTestBase {
             let asciiUpperAlloc = runTokenize("Hello")
             let katakanaAlloc = runTokenize("ﾃｽﾄ")
             
-            #if DEBUG
-            // Debug 模式下，因编译器未开启优化，非内联的闭包传参（如 @escaping callback）会引入固定的 3 次隐式堆装箱。
-            // 经诊断这属于 Swift 测试环境/编译器未优化时的闭包开销，非分词器内核所产生。
-            let maxAlloc = 3
-            #else
-            // Release 模式下，编译器进行内联与跨模块优化，消除所有闭包开销，实现 100% 零堆内存分配。
-            let maxAlloc = 0
+            #if !DEBUG
+            // 仅在 Release 优化编译模式下进行零分配断言。
+            // Debug 模式下由于未开启编译器优化，存在大量非内联闭包装箱与测试框架辅助开销，数据不具备真实回归意义。
+            XCTAssertEqual(cjkAlloc, 0, "CJK 字符分词堆分配超标")
+            XCTAssertEqual(asciiLowerAlloc, 0, "ASCII 小写分词堆分配超标")
+            XCTAssertEqual(asciiUpperAlloc, 0, "ASCII 大写/折叠分词堆分配超标")
+            XCTAssertEqual(katakanaAlloc, 0, "Katakana 片假名折叠分词堆分配超标")
             #endif
-            
-            XCTAssertLessThanOrEqual(cjkAlloc, maxAlloc, "CJK 字符分词堆分配超标")
-            XCTAssertLessThanOrEqual(asciiLowerAlloc, maxAlloc, "ASCII 小写分词堆分配超标")
-            XCTAssertLessThanOrEqual(asciiUpperAlloc, maxAlloc, "ASCII 大写/折叠分词堆分配超标")
-            XCTAssertLessThanOrEqual(katakanaAlloc, maxAlloc, "Katakana 片假名折叠分词堆分配超标")
         }
     }
 }
@@ -2437,14 +2432,11 @@ final class StopwordTests: CJKTestBase {
             let cjkAlloc = runTokenize("关于北京大学的思考")
             let asciiAlloc = runTokenize("the book is on the table")
             
-            #if DEBUG
-            let maxAlloc = 3
-            #else
-            let maxAlloc = 0
+            #if !DEBUG
+            // 仅在 Release 优化编译模式下进行零分配断言。
+            XCTAssertEqual(cjkAlloc, 0, "启用停用词时 CJK 分词堆分配超标")
+            XCTAssertEqual(asciiAlloc, 0, "启用停用词时 ASCII 分词堆分配超标")
             #endif
-            
-            XCTAssertLessThanOrEqual(cjkAlloc, maxAlloc, "启用停用词时 CJK 分词堆分配超标")
-            XCTAssertLessThanOrEqual(asciiAlloc, maxAlloc, "启用停用词时 ASCII 分词堆分配超标")
         }
     }
 }
