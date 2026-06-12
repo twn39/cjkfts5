@@ -31,4 +31,5 @@ Icon?
 .idea/
 
 # ===== SPM Resolved (commit 或忽略视团队策略而定) =====
-# Package.resolved   ← 建议提交，保证 CI 可复现构建；如需忽略请取消注释
+Package.resolved
+.codegraph

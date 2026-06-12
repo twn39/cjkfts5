@@ -10,13 +10,13 @@ import Foundation
 /// 内部采用一整块连续字节排铺存储所有已规范化停用词的 UTF-8 字节，
 /// 并通过有序的偏移量范围结构体数组进行零堆内存分配的二分查找检索。
 public struct StopwordSet: Sendable {
-    
+
     // 区间结构体，替代元组以原生支持 Sendable
     private struct WordRange: Sendable {
         let offset: Int
         let length: Int
     }
-    
+
     // 扁平化的连续字节缓冲区，存储所有停用词的规范化 UTF-8 编码
     private let flatBytes: [UInt8]
     // 指向 flatBytes 中各个停用词偏移量和长度的索引数组，按照字节字典序排序

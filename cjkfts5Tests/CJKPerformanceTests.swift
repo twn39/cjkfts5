@@ -24,7 +24,7 @@ final class ConcurrencyTests: CJKTestBase {
             (Unicode.Scalar(0xAC00)!, true),   // 韩文音节起始
             (Unicode.Scalar(0x31350)!, true),  // CJK 扩展 H（Unicode 15.0）
             (Unicode.Scalar(0x1B000)!, true),  // Katakana Supplement
-            (Unicode.Scalar(0x0020)!, false),  // 空格，非 CJK
+            (Unicode.Scalar(0x0020)!, false)  // 空格，非 CJK
         ]
 
         let iterations = 1000
@@ -146,7 +146,7 @@ final class ConcurrencyTests: CJKTestBase {
             "Apple iPhone Pro",  // ASCII
             "日本語测试",        // 日文假名
             "한국어테스트",         // 韩文
-            "北京大学工学院",      // CJK
+            "北京大学工学院"      // CJK
         ]
         try await pool.write { db in
             for text in texts {
@@ -239,8 +239,7 @@ final class ConcurrencyTests: CJKTestBase {
 
             for await result in group {
                 if let e = result.error {
-                    if result.type == "write" { writeErrors.append(e) }
-                    else { readErrors.append(e) }
+                    if result.type == "write" { writeErrors.append(e) } else { readErrors.append(e) }
                 }
             }
         }
@@ -271,7 +270,7 @@ final class ConcurrencyTests: CJKTestBase {
             ("日本語テスト東京大学", "東京"),                   // 日文假名 + 汉字
             ("한국어서울대학교테스트", "서울"),                   // 韩文
             ("混合CJK文本ABC123测试", "测试"),                  // 中英混合
-            ("CJK Ext-H \u{31350}\u{31351}字符", "\u{31350}"), // CJK 扩展 H
+            ("CJK Ext-H \u{31350}\u{31351}字符", "\u{31350}") // CJK 扩展 H
         ]
 
         // 步骤 1：建立单线程基准结果
@@ -353,27 +352,27 @@ final class ZeroAllocationTests: CJKTestBase {
     func testTokenizerZeroAllocationHotPath() async throws {
         try await dbQueue.write { db in
             let tokenizer = try CJKTokenizer(db: db, arguments: [])
-            
+
             let callback: FTS5TokenCallback = { _, _, _, _, _, _ in
                 return 0 // SQLITE_OK
             }
-            
+
             let handle = dlopen(nil, RTLD_NOW)
             guard let sym = dlsym(handle, "malloc_logger") else {
                 XCTFail("无法获取 malloc_logger 符号")
                 return
             }
-            
+
             let loggerPtr = sym.assumingMemoryBound(to: MallocLogger?.self)
             let oldLogger = loggerPtr.pointee
-            
+
             let runTokenize = { (text: String) -> Int in
                 let cString = text.utf8CString
-                
+
                 AllocationTracker.count = 0
                 AllocationTracker.enabled = false
-                
-                loggerPtr.pointee = { (type, zone, ptr, arg3, size, num) in
+
+                loggerPtr.pointee = { (type, _, _, _, _, _) in
                     if AllocationTracker.enabled {
                         let isAlloc = (type == 1 || type == 4 || type == 8 || type == 12)
                         if isAlloc {
@@ -381,11 +380,11 @@ final class ZeroAllocationTests: CJKTestBase {
                         }
                     }
                 }
-                
+
                 cString.withUnsafeBufferPointer { buf in
                     let base = buf.baseAddress!
                     let count = CInt(buf.count - 1)
-                    
+
                     // 预热
                     _ = tokenizer.tokenize(
                         context: nil,
@@ -394,11 +393,11 @@ final class ZeroAllocationTests: CJKTestBase {
                         nText: count,
                         tokenCallback: callback
                     )
-                    
+
                     // 开始追踪
                     AllocationTracker.count = 0
                     AllocationTracker.enabled = true
-                    
+
                     _ = tokenizer.tokenize(
                         context: nil,
                         tokenization: [.document],
@@ -406,19 +405,19 @@ final class ZeroAllocationTests: CJKTestBase {
                         nText: count,
                         tokenCallback: callback
                     )
-                    
+
                     AllocationTracker.enabled = false
                 }
-                
+
                 loggerPtr.pointee = oldLogger
                 return AllocationTracker.count
             }
-            
+
             let cjkAlloc = runTokenize("北京大学")
             let asciiLowerAlloc = runTokenize("hello")
             let asciiUpperAlloc = runTokenize("Hello")
             let katakanaAlloc = runTokenize("ﾃｽﾄ")
-            
+
             #if !DEBUG
             // 仅在 Release 优化编译模式下进行零分配断言。
             // Debug 模式下由于未开启编译器优化，存在大量非内联闭包装箱与测试框架辅助开销，数据不具备真实回归意义。
@@ -432,7 +431,7 @@ final class ZeroAllocationTests: CJKTestBase {
 }
 
 final class TokenizerBenchmarkTests: CJKTestBase {
-    
+
     func testCompleteBenchmarkSuite() async throws {
         // 1. 准备 5,000 条混合中英文测试文档（总大小约 2.6 MB）
         let baseParagraph = """
@@ -443,7 +442,7 @@ final class TokenizerBenchmarkTests: CJKTestBase {
         本分词器支持中日韩所有汉字、平假名、片假名、韩文音节、字母以及全部 unicode 扩展集。
         在停用词过滤开启时，核心热路径依然实现 100% 零堆内存分配，具有极佳的缓存局部性。
         """
-        
+
         let docCount = 5000
         let documents: [String] = {
             var docs: [String] = []
@@ -453,27 +452,27 @@ final class TokenizerBenchmarkTests: CJKTestBase {
             }
             return docs
         }()
-        
+
         let totalBytes = documents.reduce(0) { $0 + $1.utf8.count }
         let totalSizeMB = Double(totalBytes) / (1024.0 * 1024.0)
-        
+
         // 停用词设置
         let stopwords = CJKTokenizerOptions.englishStopwords.union(CJKTokenizerOptions.chineseStopwords)
-        
+
         // ───── 维度 A：直接分词测试 ─────
         let rawResults: [(name: String, timeMs: Double, throughput: Double)] = try await dbQueue.write { db in
             let largeText = documents.joined(separator: "\n")
             let cString = largeText.utf8CString
-            
+
             let runRawBench = { (name: String, args: [String]) throws -> (String, Double, Double) in
                 let tokenizer = try CJKTokenizer(db: db, arguments: args)
                 let callback: FTS5TokenCallback = { _, _, _, _, _, _ in return 0 }
-                
+
                 // 预热
                 cString.withUnsafeBufferPointer { buf in
                     _ = tokenizer.tokenize(context: nil, tokenization: [.document], pText: buf.baseAddress!, nText: CInt(buf.count - 1), tokenCallback: callback)
                 }
-                
+
                 let start = CFAbsoluteTimeGetCurrent()
                 cString.withUnsafeBufferPointer { buf in
                     _ = tokenizer.tokenize(context: nil, tokenization: [.document], pText: buf.baseAddress!, nText: CInt(buf.count - 1), tokenCallback: callback)
@@ -482,12 +481,12 @@ final class TokenizerBenchmarkTests: CJKTestBase {
                 let duration = end - start
                 return (name, duration * 1000.0, totalSizeMB / duration)
             }
-            
+
             let r1 = try runRawBench("CJK (Default)", [])
             let r2 = try runRawBench("CJK (No Unigrams)", ["no_unigram"])
             let r3 = try runRawBench("CJK (With Stopwords)", ["stopwords", stopwords.sorted().joined(separator: ",")])
             let r4 = try runRawBench("CJK (No Folding)", ["no_case_fold", "no_width_fold", "no_diacritic_fold"])
-            
+
             return [
                 (r1.0, r1.1, r1.2),
                 (r2.0, r2.1, r2.2),
@@ -495,7 +494,7 @@ final class TokenizerBenchmarkTests: CJKTestBase {
                 (r4.0, r4.1, r4.2)
             ]
         }
-        
+
         // ───── 维度 B：FTS5 数据库表写入与索引测试 ─────
         let runIndexBench = { (name: String, descriptor: FTS5TokenizerDescriptor) -> (String, Double, Double) in
             var config = Configuration()
@@ -505,16 +504,16 @@ final class TokenizerBenchmarkTests: CJKTestBase {
             guard let db = try? DatabaseQueue(configuration: config) else {
                 return (name, 0.0, 0.0)
             }
-            
+
             let tableName = "docs_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-            
+
             try? db.write { db in
                 try db.create(virtualTable: tableName, using: FTS5()) { t in
                     t.tokenizer = descriptor
                     t.column("content")
                 }
             }
-            
+
             let start = CFAbsoluteTimeGetCurrent()
             try? db.write { db in
                 for doc in documents {
@@ -525,13 +524,13 @@ final class TokenizerBenchmarkTests: CJKTestBase {
             let duration = end - start
             return (name, duration * 1000.0, totalSizeMB / duration)
         }
-        
+
         let i1 = runIndexBench("CJK (Default)", .cjk())
         let i2 = runIndexBench("CJK (No Unigrams)", .cjk(emitUnigrams: false))
         let i3 = runIndexBench("CJK (With Stopwords)", .cjk(stopwords: stopwords))
         let i4 = runIndexBench("SQLite unicode61", .unicode61())
         let i5 = runIndexBench("SQLite trigram", FTS5TokenizerDescriptor(components: ["trigram"]))
-        
+
         let indexResults = [
             (i1.0, i1.1, i1.2),
             (i2.0, i2.1, i2.2),
@@ -539,38 +538,38 @@ final class TokenizerBenchmarkTests: CJKTestBase {
             (i4.0, i4.1, i4.2),
             (i5.0, i5.1, i5.2)
         ]
-        
+
         // 生成 Markdown 报告
         var mdReport = """
         # CJKTokenizer Complete Performance Benchmark Report
-        
+
         - **Corpus Details**: Mixed Chinese/English text, \(docCount) documents.
         - **Corpus Size**: \(String(format: "%.2f", totalSizeMB)) MB (\(totalBytes) bytes).
         - **Platform**: \(ProcessInfo.processInfo.operatingSystemVersionString) (\(ProcessInfo.processInfo.activeProcessorCount) Cores).
-        
+
         ---
-        
+
         ## 维度 A：直接分词吞吐率 (Raw Tokenizer Throughput)
         > 测量直接调用分词器进行分词的纯粹 CPU 吞吐性能（不含 SQLite 数据库写入开销）。
-        
+
         | 分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
         | :--- | :---: | :---: |
         """
-        
+
         for res in rawResults {
             mdReport += "\n| \(res.0) | \(String(format: "%.2f", res.1)) | \(String(format: "%.2f", res.2)) |"
         }
-        
+
         mdReport += """
-        
-        
+
+
         ## 维度 B：FTS5 数据库表写入与索引吞吐率 (FTS5 Indexing Throughput)
         > 测量在真实 SQLite 事务中，批量插入并建立 FTS5 索引的端到端吞吐性能（含数据库 I/O 与 FTS5 树更新）。
-        
+
         | 虚拟表分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
         | :--- | :---: | :---: |
         """
-        
+
         for res in indexResults {
             if res.1 > 0 {
                 mdReport += "\n| \(res.0) | \(String(format: "%.2f", res.1)) | \(String(format: "%.2f", res.2)) |"
@@ -578,14 +577,12 @@ final class TokenizerBenchmarkTests: CJKTestBase {
                 mdReport += "\n| \(res.0) | N/A (不支持) | N/A |"
             }
         }
-        
+
         mdReport += "\n\n*(测试结果在运行时自动计算生成)*\n"
-        
+
         print("🚀🚀🚀 [BENCHMARK SUITE COMPLETED] 🚀🚀🚀")
         print(mdReport)
-        
+
         try? mdReport.write(toFile: "/Users/2342184/programs/cjkfts5/benchmark_results.md", atomically: true, encoding: .utf8)
     }
 }
-
-

@@ -165,17 +165,17 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         var cjk0 = -1
         var cjk1 = -1
         var cjk2 = -1
-        
+
         // 折叠后的码点 (用于 CJK 位置判定与 Bigram 拼接)
         var cp0: UInt32 = 0
         var cp1: UInt32 = 0
         var cp2: UInt32 = 0
-        
+
         // 原始解码码点 (用于比对 cp，判断是否发生了折叠，从而选择栈分配发射还是 emitRaw 直发)
         var orig0: UInt32 = 0
         var orig1: UInt32 = 0
         var orig2: UInt32 = 0
-        
+
         var cjkCount = 0
         var inCJK = false
 
@@ -283,7 +283,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                                 rc1 = callback(context, 0, pText.advanced(by: cjk0), CInt(cjk2 - cjk0), CInt(cjk0), CInt(cjk2))
                             }
                             guard rc1 == SQLITE_OK else { return rc1 }
-                            
+
                             let rc2: CInt
                             if orig0 != cp0 {
                                 rc2 = emitFoldedUnigram(cp: cp0, flags: FTS5_TOKEN_COLOCATED, byteStart: cjk0, byteEnd: cjk1, callback: callback, context: context)
@@ -298,11 +298,11 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                     cjk0 = cjk1
                     cp0 = cp1
                     orig0 = orig1
-                    
+
                     cjk1 = cjk2
                     cp1 = cp2
                     orig1 = orig2
-                    
+
                     cjkCount = 2
                 }
             } else {
@@ -431,7 +431,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                     context: context
                 )
             }
-            
+
             var hasUpper = false
             for i in byteStart..<byteEnd {
                 if UInt8(bitPattern: pText[i]) >= 0x41 && UInt8(bitPattern: pText[i]) <= 0x5A {
@@ -478,9 +478,9 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         let rawStart = UnsafeRawPointer(pText).advanced(by: byteStart)
         let byteSlice = UnsafeRawBufferPointer(start: rawStart, count: wordLen)
         let raw = String(decoding: byteSlice, as: UTF8.self)
-        
+
         let token = StopwordSet.normalizeWord(raw, options: options)
-        
+
         if let stopwordSet {
             let isStop = token.utf8.withContiguousStorageIfAvailable { buf in
                 stopwordSet.contains(UnsafeBufferPointer(start: buf.baseAddress, count: buf.count))
@@ -489,7 +489,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                 return SQLITE_OK
             }
         }
-        
+
         return token.withCString { cStr in
             callback(
                 context, 0,
@@ -645,7 +645,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
             let bigramStop = isBigramStopword(cp0: cp0, cp1: cp1)
             let emitUni = options.emitUnigrams && !isQuery
             let unigram0Stop = emitUni ? isUnigramStopword(cp: cp0) : true
-            
+
             if !bigramStop || !unigram0Stop {
                 if bigramStop {
                     let rc: CInt
@@ -671,7 +671,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                         rc1 = callback(context, 0, pText.advanced(by: cjk0), CInt(segEnd - cjk0), CInt(cjk0), CInt(segEnd))
                     }
                     guard rc1 == SQLITE_OK else { return rc1 }
-                    
+
                     let rc2: CInt
                     if orig0 != cp0 {
                         rc2 = emitFoldedUnigram(cp: cp0, flags: FTS5_TOKEN_COLOCATED, byteStart: cjk0, byteEnd: cjk1, callback: callback, context: context)
@@ -681,7 +681,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                     guard rc2 == SQLITE_OK else { return rc2 }
                 }
             }
-            
+
             if !isQuery && !isUnigramStopword(cp: cp1) {
                 let rc3: CInt
                 if orig1 != cp1 {
@@ -692,7 +692,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                 guard rc3 == SQLITE_OK else { return rc3 }
             }
         }
-        
+
         cjkCount = 0
         inCJK = false
         return SQLITE_OK

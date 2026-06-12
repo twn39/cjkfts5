@@ -49,18 +49,18 @@ enum CJKUnicode {
         let v = scalar.value
 
         // ── 热路径：最高频范围优先，减少分支预测失败 ──────────────────────────
-        if v >= 0x4E00  && v <= 0x9FFF  { return true }   // CJK 统一汉字（最常用）
-        if v >= 0xAC00  && v <= 0xD7AF  { return true }   // 韩文音节
+        if v >= 0x4E00  && v <= 0x9FFF { return true }   // CJK 统一汉字（最常用）
+        if v >= 0xAC00  && v <= 0xD7AF { return true }   // 韩文音节
 
         // 平假名 U+3040–U+309F 与片假名 U+30A0–U+30FF 连续，合并为一次判断
-        if v >= 0x3040  && v <= 0x30FF  { return true }   // 平假名 + 片假名
+        if v >= 0x3040  && v <= 0x30FF { return true }   // 平假名 + 片假名
 
         // ── 次热路径：BMP 补充范围 ─────────────────────────────────────────
-        if v >= 0x3400  && v <= 0x4DBF  { return true }   // CJK 扩展 A
-        if v >= 0xF900  && v <= 0xFAFF  { return true }   // CJK 兼容汉字
-        if v >= 0x1100  && v <= 0x11FF  { return true }   // 韩文 Jamo
-        if v >= 0x3130  && v <= 0x318F  { return true }   // 韩文兼容 Jamo
-        if v >= 0x31F0  && v <= 0x31FF  { return true }   // 片假名扩展（爱努语）
+        if v >= 0x3400  && v <= 0x4DBF { return true }   // CJK 扩展 A
+        if v >= 0xF900  && v <= 0xFAFF { return true }   // CJK 兼容汉字
+        if v >= 0x1100  && v <= 0x11FF { return true }   // 韩文 Jamo
+        if v >= 0x3130  && v <= 0x318F { return true }   // 韩文兼容 Jamo
+        if v >= 0x31F0  && v <= 0x31FF { return true }   // 片假名扩展（爱努语）
 
         // ── SMP：日文假名扩展区块 ──────────────────────────────────────────────
         // 注：SMP 字符 UTF-8 编码为 4 字节，在文本中出现频率较低
@@ -321,16 +321,16 @@ enum CJKUnicode {
     @inline(__always)
     static func isCJKCodepoint(_ v: UInt32) -> Bool {
         // ── 热路径：最高频范围优先 ──────────────────────────────────────────
-        if v >= 0x4E00  && v <= 0x9FFF  { return true }   // CJK 统一汉字
-        if v >= 0xAC00  && v <= 0xD7AF  { return true }   // 韩文音节
-        if v >= 0x3040  && v <= 0x30FF  { return true }   // 平假名 + 片假名
+        if v >= 0x4E00  && v <= 0x9FFF { return true }   // CJK 统一汉字
+        if v >= 0xAC00  && v <= 0xD7AF { return true }   // 韩文音节
+        if v >= 0x3040  && v <= 0x30FF { return true }   // 平假名 + 片假名
 
         // ── 次热路径：BMP 补充范围 ─────────────────────────────────────────
-        if v >= 0x3400  && v <= 0x4DBF  { return true }   // CJK 扩展 A
-        if v >= 0xF900  && v <= 0xFAFF  { return true }   // CJK 兼容汉字
-        if v >= 0x1100  && v <= 0x11FF  { return true }   // 韩文 Jamo
-        if v >= 0x3130  && v <= 0x318F  { return true }   // 韩文兼容 Jamo
-        if v >= 0x31F0  && v <= 0x31FF  { return true }   // 片假名扩展
+        if v >= 0x3400  && v <= 0x4DBF { return true }   // CJK 扩展 A
+        if v >= 0xF900  && v <= 0xFAFF { return true }   // CJK 兼容汉字
+        if v >= 0x1100  && v <= 0x11FF { return true }   // 韩文 Jamo
+        if v >= 0x3130  && v <= 0x318F { return true }   // 韩文兼容 Jamo
+        if v >= 0x31F0  && v <= 0x31FF { return true }   // 片假名扩展
 
         // ── SMP 日文和 CJK 扩展区块 ──────────────────────────────────────────
         if v >= 0x1AFF0 && v <= 0x1AFFF { return true }

@@ -90,7 +90,7 @@ public struct CJKTokenizerOptions: Sendable {
     var arguments: [String] {
         var args: [String] = []
         if !emitUnigrams { args.append("no_unigram") }
-        if !caseFolding  { args.append("no_case_fold") }
+        if !caseFolding { args.append("no_case_fold") }
         if !widthFolding { args.append("no_width_fold") }
         if !diacriticFolding { args.append("no_diacritic_fold") }
         if let stopwords, !stopwords.isEmpty {

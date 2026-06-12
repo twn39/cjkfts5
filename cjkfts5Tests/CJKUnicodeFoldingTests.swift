@@ -18,7 +18,7 @@ final class UnicodeCaseFoldingTests: CJKTestBase {
     func testLatinExtendedCaseFolding() async throws {
         // 使用禁用变音符折叠的数据库以验证纯大小写折叠行为
         let db = try makeDB(options: CJKTokenizerOptions(caseFolding: true, widthFolding: true, diacriticFolding: false))
-        
+
         // 德语「惊喜」——首字母 Ü (U+00DC) 走路径 3
         try await insert("Überraschung", into: db)
         // 法语「咖啡」——纯小写含变音符（走路径 3，无大写折叠需求）
@@ -172,7 +172,6 @@ final class UnicodeCaseFoldingTests: CJKTestBase {
         let r4 = try await searchAny("テスト", in: disabledDB)
         XCTAssertTrue(r4.isEmpty, "禁用宽度折叠时，全半角片假名不应互通")
     }
-
 
     // MARK: T6 — CJK 与 Latin Extended 路径切换边界
 
