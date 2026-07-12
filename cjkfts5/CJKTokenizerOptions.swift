@@ -62,8 +62,30 @@ public struct CJKTokenizerOptions: Sendable {
     /// 推荐配置：全折叠开启 + 中英文常用停用词。
     ///
     /// 与裸 `.cjk()`（无停用词）不同；适合多数中英混合全文检索场景。
+    ///
+    /// 契约见 `docs/TOKENIZATION_PROFILE.md`。
     public static var recommended: CJKTokenizerOptions {
         CJKTokenizerOptions(stopwords: StopwordPresets.cjkCommon)
+    }
+
+    /// 最小索引：关闭 unigram（约减小索引体积），全折叠，无停用词。
+    ///
+    /// 单字查询将无法命中；短语 / 双字及以上 bigram 查询仍可用。
+    public static var minimalIndex: CJKTokenizerOptions {
+        CJKTokenizerOptions(emitUnigrams: false)
+    }
+
+    /// 严格匹配：开启 unigram，关闭全部折叠，无停用词。
+    ///
+    /// 大小写 / 全半角 / 变音符均区分，适合需精确字节形态检索的场景。
+    public static var strictMatch: CJKTokenizerOptions {
+        CJKTokenizerOptions(
+            emitUnigrams: true,
+            caseFolding: false,
+            widthFolding: false,
+            diacriticFolding: false,
+            stopwords: nil
+        )
     }
 
     // MARK: Built-in 默认停用词集（兼容别名）

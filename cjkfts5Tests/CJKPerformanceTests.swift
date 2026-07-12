@@ -540,12 +540,24 @@ final class TokenizerBenchmarkTests: CJKTestBase {
         ]
 
         // 生成 Markdown 报告
+        #if DEBUG
+        let buildConfig = "Debug (not comparable to Release; use `swift test -c release`)"
+        #else
+        let buildConfig = "Release"
+        #endif
         var mdReport = """
         # CJKTokenizer Complete Performance Benchmark Report
+
+        > **How to reproduce** (from package root):
+        > ```bash
+        > swift test -c release --filter TokenizerBenchmarkTests
+        > ```
+        > This file is overwritten by the test. Compare configurations **within the same run**.
 
         - **Corpus Details**: Mixed Chinese/English text, \(docCount) documents.
         - **Corpus Size**: \(String(format: "%.2f", totalSizeMB)) MB (\(totalBytes) bytes).
         - **Platform**: \(ProcessInfo.processInfo.operatingSystemVersionString) (\(ProcessInfo.processInfo.activeProcessorCount) Cores).
+        - **Build**: \(buildConfig)
 
         ---
 
@@ -583,6 +595,9 @@ final class TokenizerBenchmarkTests: CJKTestBase {
         print("🚀🚀🚀 [BENCHMARK SUITE COMPLETED] 🚀🚀🚀")
         print(mdReport)
 
-        try? mdReport.write(toFile: "/Users/2342184/programs/cjkfts5/benchmark_results.md", atomically: true, encoding: .utf8)
+        // 写入仓库根目录（相对当前工作目录；swift test 通常在 package root）
+        let outPath = "benchmark_results.md"
+        try? mdReport.write(toFile: outPath, atomically: true, encoding: .utf8)
+        print("📝 Benchmark report written to \(outPath)")
     }
 }

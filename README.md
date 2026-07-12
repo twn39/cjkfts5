@@ -117,6 +117,10 @@ t.tokenizer = .cjk()
 // 推荐：全折叠 + 中英文常用停用词
 t.tokenizer = .cjk(options: .recommended)
 
+// 命名 profile（契约见 docs/TOKENIZATION_PROFILE.md）
+t.tokenizer = .cjk(options: .minimalIndex)  // 关 unigram，索引更小
+t.tokenizer = .cjk(options: .strictMatch)   // 关全部折叠，严格匹配
+
 // 完整 options 对象（扩展新开关时优先走此入口）
 var opts = CJKTokenizerOptions()
 opts.emitUnigrams = false
@@ -181,30 +185,25 @@ let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 | 内存热路径分配数 | **0 次 (100% 零堆分配)** | 频繁 malloc | 0 次 |
 
 ### 2. 吞吐性能基准测试 (Release 模式)
-我们在 macOS (10 Cores) 下，使用 **3.24 MB (3,393,890 字节)** 的中英混合语料库，对分词及 FTS5 写入性能进行了全面基准测试。详见完整报告：[benchmark_results.md](benchmark_results.md)。
 
-#### 维度 A：直接分词吞吐率 (Raw Tokenizer Throughput)
-> 测量直接调用分词器进行分词的纯粹 CPU 吞吐性能（不含 SQLite 数据库写入开销）。
+权威数字以 [benchmark_results.md](benchmark_results.md) 为准（由测试运行时生成，含平台与语料元数据）。
 
-| 分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
-| :--- | :---: | :---: |
-| CJK (Default) | 21.50 | **150.51** |
-| CJK (No Unigrams) | 19.96 | **162.13** |
-| CJK (With Stopwords) | 49.35 | **65.58** |
-| CJK (No Folding) | 21.54 | **150.24** |
+**复现（请在 package 根目录、Release 配置下运行）：**
 
-#### 维度 B：FTS5 数据库表写入与索引吞吐率 (FTS5 Indexing Throughput)
-> 测量在真实 SQLite 事务中，批量插入并建立 FTS5 索引的端到端吞吐性能（含数据库 I/O 与 FTS5 树更新）。
+```bash
+swift test -c release --filter TokenizerBenchmarkTests
+# 报告写入 ./benchmark_results.md
+```
 
-| 虚拟表分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
-| :--- | :---: | :---: |
-| **CJK (Default)** | 108.17 | **29.92** |
-| **CJK (No Unigrams)** | 75.31 | **42.98** |
-| **CJK (With Stopwords)** | 122.57 | **26.41** |
-| **SQLite unicode61** (内置) | 69.09 | **46.85** |
-| **SQLite trigram** (内置) | 136.84 | **23.65** |
+语料：约 5000 条中英混合文档（约 3.2 MB）。不同机器数字会波动；对比配置时请看**同一次运行**内的相对关系。
 
-*注：`CJKTokenizer (Default)` 在保证中日韩精确短语检索与 1 字索引的前提下，写入吞吐速率仍显著超越了 SQLite 官方内置的 `trigram` 分词器（**23.65 MB/s**）。*
+| 配置 | 关注点 |
+| :--- | :--- |
+| CJK (Default) | 全折叠、无停用词基线 |
+| CJK (No Unigrams) | 索引更小 / 通常更快 |
+| CJK (With Stopwords) | `cjkCommon`；单码点 O(1) + CJK bigram 短路优化 |
+| CJK (No Folding) | 关闭全部折叠 |
+| SQLite unicode61 / trigram | 内置对照（无 CJK bigram 语义） |
 
 ## 与工业界标准对齐
 
@@ -218,30 +217,33 @@ let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 
 ```
 cjkfts5/
-├── cjkfts5/                 # TokenNormalizer / StopwordPresets / CJKTokenizer / …
+├── cjkfts5/
 │   ├── CJKTokenizer.swift           # 核心分词器（FTS5CustomTokenizer）
-│   ├── CJKTokenizerOptions.swift    # 配置选项类型
-│   ├── CJKUnicodeHelper.swift       # Unicode 范围判断 & 字节偏移工具
-│   ├── StopwordSet.swift            # 停用词扁平连续内存与二分查找容器
-│   └── CJKIntegration.swift         # GRDB 集成便捷 API（.cjk()、addCJKTokenizer()）
+│   ├── CJKTokenizerOptions.swift    # 配置 / 命名 profile / FTS5 args
+│   ├── TokenNormalizer.swift        # 折叠规范化单一事实来源
+│   ├── CJKUnicodeHelper.swift       # Unicode 范围判断 & 字节工具
+│   ├── StopwordSet.swift            # 单码点 O(1) + 多字节二分
+│   ├── StopwordPresets.swift        # en / zh / cjkCommon
+│   └── CJKIntegration.swift         # .cjk()、addCJKTokenizer()
 ├── cjkfts5Tests/
-│   ├── CJKTokenizerTests.swift      # 基础基类与分词核心搜索测试
-│   ├── CJKUnicodeFoldingTests.swift  # 大小写折叠集成测试
-│   ├── CJKUnicodeHelperTests.swift   # Unicode 范围及编解码单元测试
-│   ├── CJKWidthAndDiacriticTests.swift # 宽度与变音符折叠集成测试
-│   ├── CJKStopwordTests.swift       # 停用词过滤与位置晋升集成测试
-│   └── CJKPerformanceTests.swift    # 多线程并发与零堆分配性能回归测试
-├── .github/workflows/
-│   └── ci.yml                       # CI 矩阵：Swift 5.9/5.10/6.0 × GRDB 7.x
+│   ├── CJKTokenizerTests.swift      # CJKTestBase fixture + 核心搜索
+│   ├── CJKTokenGoldenTests.swift    # token / options / 晋升金标
+│   ├── CJKPerformanceTests.swift    # 并发、零分配、吞吐基准
+│   └── …                            # 折叠 / 停用词 / Unicode 等
+├── benchmark_results.md             # Release 基准输出（可复现）
+├── .github/workflows/ci.yml
 └── docs/
-    ├── FTS5_TOKENIZER_DESIGN.md     # 深度技术文档：设计分析 & 关键问题
-    └── GRDB_COMPATIBILITY.md        # GRDB 7.x 兼容性说明 & 升级检查清单
+    ├── FTS5_TOKENIZER_DESIGN.md
+    ├── TOKENIZATION_PROFILE.md
+    └── GRDB_COMPATIBILITY.md
 ```
 
 ## 技术文档
 
-- 📄 [FTS5 分词器设计分析](docs/FTS5_TOKENIZER_DESIGN.md) — query/document 语义差异、假阳性 Bug 根因、修复方案对比
-- 📄 [GRDB 7.x 兼容性说明](docs/GRDB_COMPATIBILITY.md) — API 依赖清单、版本记录、升级检查清单
+- 📄 [FTS5 分词器设计分析](docs/FTS5_TOKENIZER_DESIGN.md) — 零拷贝架构、query/document 语义、假阳性根因、停用词晋升
+- 📄 [Tokenization Profile 契约](docs/TOKENIZATION_PROFILE.md) — 命名 profile、FTS5 argument wire format、重索引规则
+- 📄 [GRDB 7.x 兼容性说明](docs/GRDB_COMPATIBILITY.md) — 集成 API、GRDB 陷阱、升级检查清单
+- 📊 [性能基准报告](benchmark_results.md) — Release 复现结果
 
 ## 许可证
 

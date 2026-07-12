@@ -8,11 +8,15 @@ import XCTest
 import GRDB
 @testable import cjkfts5
 
-// MARK: - 基础测试基类
+// MARK: - 基础测试基类 / FTS fixture
 
-/// 提供标准内存数据库和辅助方法，所有子测试类继承此基类。
+/// 内存 FTS5 夹具：统一注册 `CJKTokenizer`、建 `docs` 表，并提供 insert / search 辅助。
+///
+/// 集成测试应优先复用本基类，避免各文件重复 `prepareDatabase` 样板。
+/// 变更默认 options 时会大面积影响子类——视作契约变更并同步 golden / 设计文档。
 class CJKTestBase: XCTestCase {
 
+    /// 默认套件使用的内存库（`setUp` 中按 default options 创建）
     var dbQueue: DatabaseQueue!
 
     override func setUp() async throws {
@@ -25,21 +29,23 @@ class CJKTestBase: XCTestCase {
         try await super.tearDown()
     }
 
-    /// 创建使用指定选项的内存 FTS5 数据库（含 docs 表）
+    // MARK: Fixture factory
+
+    /// 创建使用指定 options 的内存 FTS5 数据库（虚拟表名固定为 `docs`）
     func makeDB(options: CJKTokenizerOptions = CJKTokenizerOptions()) throws -> DatabaseQueue {
         var config = Configuration()
-        config.prepareDatabase { db in
-            db.add(tokenizer: CJKTokenizer.self)
-        }
+        config.addCJKTokenizer()
         let db = try DatabaseQueue(configuration: config)
         try db.write { db in
             try db.create(virtualTable: "docs", using: FTS5()) { t in
-                t.tokenizer = CJKTokenizer.tokenizerDescriptor(options: options)
+                t.tokenizer = .cjk(options: options)
                 t.column("content")
             }
         }
         return db
     }
+
+    // MARK: Mutations & queries
 
     func insert(_ text: String, into db: DatabaseQueue? = nil) async throws {
         let target = db ?? dbQueue!
@@ -48,7 +54,7 @@ class CJKTestBase: XCTestCase {
         }
     }
 
-    /// phrase 查询（matchingPhrase）
+    /// phrase 查询（`matchingPhrase`）
     func search(_ query: String, in db: DatabaseQueue? = nil) async throws -> [String] {
         let target = db ?? dbQueue!
         return try await target.read { db in
@@ -58,7 +64,7 @@ class CJKTestBase: XCTestCase {
         }
     }
 
-    /// any-token 查询（matchingAnyTokenIn）
+    /// any-token 查询（`matchingAnyTokenIn`；GRDB 侧辅助分词为 ascii，见 docs/GRDB_COMPATIBILITY.md）
     func searchAny(_ query: String, in db: DatabaseQueue? = nil) async throws -> [String] {
         let target = db ?? dbQueue!
         return try await target.read { db in
@@ -68,7 +74,7 @@ class CJKTestBase: XCTestCase {
         }
     }
 
-    /// raw pattern 查询（精确控制 FTS5 query token）
+    /// raw pattern 查询（精确控制 FTS5 query 字符串）
     func searchRaw(_ rawPattern: String, in db: DatabaseQueue? = nil) async throws -> [String] {
         let target = db ?? dbQueue!
         return try await target.read { db in

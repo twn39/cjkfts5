@@ -1,8 +1,16 @@
 # CJKTokenizer Complete Performance Benchmark Report
 
+> **How to reproduce** (from package root):
+> ```bash
+> swift test -c release --filter TokenizerBenchmarkTests
+> ```
+> This file is overwritten by the test. Compare configurations **within the same run**.
+> Debug (`swift test` without `-c release`) numbers are not comparable to Release.
+
 - **Corpus Details**: Mixed Chinese/English text, 5000 documents.
 - **Corpus Size**: 3.24 MB (3393890 bytes).
 - **Platform**: 版本26.3（版号25D125） (10 Cores).
+- **Build**: Release (`swift test -c release`)
 
 ---
 
@@ -11,20 +19,22 @@
 
 | 分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
 | :--- | :---: | :---: |
-| CJK (Default) | 135.11 | 23.96 |
-| CJK (No Unigrams) | 126.61 | 25.56 |
-| CJK (With Stopwords) | 826.26 | 3.92 |
-| CJK (No Folding) | 122.70 | 26.38 |
+| CJK (Default) | 23.13 | 139.96 |
+| CJK (No Unigrams) | 22.45 | 144.20 |
+| CJK (With Stopwords) | 29.97 | **107.98** |
+| CJK (No Folding) | 23.44 | 138.06 |
+
+*Stopwords path improved via single-codepoint O(1) lookup + CJK bigram short-circuit when multi-byte table is ASCII-only (`cjkCommon`).*
 
 ## 维度 B：FTS5 数据库表写入与索引吞吐率 (FTS5 Indexing Throughput)
 > 测量在真实 SQLite 事务中，批量插入并建立 FTS5 索引的端到端吞吐性能（含数据库 I/O 与 FTS5 树更新）。
 
 | 虚拟表分词器配置 | 耗时 (ms) | 吞吐率 (MB/s) |
 | :--- | :---: | :---: |
-| CJK (Default) | 295.73 | 10.94 |
-| CJK (No Unigrams) | 244.32 | 13.25 |
-| CJK (With Stopwords) | 997.23 | 3.25 |
-| SQLite unicode61 | 180.00 | 17.98 |
-| SQLite trigram | 183.09 | 17.68 |
+| CJK (Default) | 104.98 | 30.83 |
+| CJK (No Unigrams) | 79.22 | 40.86 |
+| CJK (With Stopwords) | 101.20 | 31.98 |
+| SQLite unicode61 | 65.87 | 49.13 |
+| SQLite trigram | 126.95 | 25.50 |
 
 *(测试结果在运行时自动计算生成)*

@@ -112,9 +112,49 @@ final class TokenizerOptionsCodecTests: XCTestCase {
         XCTAssertEqual(CJKTokenizerOptions.recommended.stopwords, StopwordPresets.cjkCommon)
     }
 
+    func testMinimalIndexProfile() {
+        let opts = CJKTokenizerOptions.minimalIndex
+        XCTAssertFalse(opts.emitUnigrams)
+        XCTAssertTrue(opts.caseFolding && opts.widthFolding && opts.diacriticFolding)
+        XCTAssertNil(opts.stopwords)
+        XCTAssertTrue(opts.arguments.contains("no_unigram"))
+    }
+
+    func testStrictMatchProfile() {
+        let opts = CJKTokenizerOptions.strictMatch
+        XCTAssertTrue(opts.emitUnigrams)
+        XCTAssertFalse(opts.caseFolding)
+        XCTAssertFalse(opts.widthFolding)
+        XCTAssertFalse(opts.diacriticFolding)
+        XCTAssertNil(opts.stopwords)
+        let args = opts.arguments
+        XCTAssertTrue(args.contains("no_case_fold"))
+        XCTAssertTrue(args.contains("no_width_fold"))
+        XCTAssertTrue(args.contains("no_diacritic_fold"))
+    }
+
     func testLegacyAliasesPointToPresets() {
         XCTAssertEqual(CJKTokenizerOptions.englishStopwords, StopwordPresets.english)
         XCTAssertEqual(CJKTokenizerOptions.chineseStopwords, StopwordPresets.chinese)
+    }
+
+    func testStopwordSetSingleCodepointFastPath() {
+        let opts = CJKTokenizerOptions(stopwords: StopwordPresets.chinese)
+        let set = StopwordSet(stopwords: opts.stopwords!, options: opts)
+        XCTAssertTrue(set.containsCodepoint(0x7684)) // 的
+        XCTAssertFalse(set.mayContainCJKMultiCodepointStopwords)
+        // cjkCommon：英文多码点 + 中文单码点 → CJK bigram 应可短路
+        let common = StopwordSet(stopwords: StopwordPresets.cjkCommon, options: CJKTokenizerOptions())
+        XCTAssertFalse(common.mayContainCJKMultiCodepointStopwords)
+        XCTAssertTrue(common.containsCodepoint(0x7684))
+        // 含多字中文停用词时标志应为 true
+        let multi = StopwordSet(stopwords: ["关于", "的"], options: CJKTokenizerOptions())
+        XCTAssertTrue(multi.mayContainCJKMultiCodepointStopwords)
+        let about = "关于"
+        let hit = about.utf8.withContiguousStorageIfAvailable { buf in
+            multi.contains(UnsafeBufferPointer(start: buf.baseAddress, count: buf.count))
+        } ?? false
+        XCTAssertTrue(hit)
     }
 }
 
@@ -155,18 +195,17 @@ final class TokenGoldenTests: CJKTestBase {
         XCTAssertEqual(t.map(\.colocated), [false, true, false, true, false, true, false])
     }
 
-    func testQueryGoldenTsinghuaNoTrailingUnigramAlone() throws {
-        // query 模式：末字不单独占新位置；colocated unigram 在非末位置仍可能发出
+    func testQueryGoldenTsinghuaExactSequence() throws {
+        // query：仅 bigram 主 token，无 colocated、无末字独立位
         let t = try tokens("清华大学", query: true)
-        // 典型：清华/清, 华大/华, 大学（末 bigram，无独立「学」位，且 query 常不发 colocated）
-        XCTAssertFalse(t.map(\.token).contains("学") && t.last?.token == "学",
-                       "query 末字不应作为独立新位置 token")
-        XCTAssertTrue(t.map(\.token).contains("清华"))
-        XCTAssertTrue(t.map(\.token).contains("大学"))
+        XCTAssertEqual(t.map(\.token), ["清华", "华大", "大学"])
+        XCTAssertEqual(t.map(\.colocated), [false, false, false])
+        XCTAssertFalse(t.map(\.token).contains("学"))
+        XCTAssertFalse(t.map(\.token).contains("清"))
     }
 
     func testDocumentNoUnigrams() throws {
-        let opts = CJKTokenizerOptions(emitUnigrams: false)
+        let opts = CJKTokenizerOptions.minimalIndex
         let t = try tokens("清华", options: opts)
         // emitUnigrams=false：不发 colocated unigram，但段末字仍占独立位置（phrase/尾字索引）
         XCTAssertEqual(t.map(\.token), ["清华", "华"])
@@ -179,13 +218,49 @@ final class TokenGoldenTests: CJKTestBase {
         XCTAssertEqual(t.map(\.token), ["hello", "world"])
     }
 
+    func testStrictMatchPreservesCase() throws {
+        let t = try tokens("Hello", options: .strictMatch)
+        XCTAssertEqual(t.map(\.token), ["Hello"])
+    }
+
+    func testWidthFoldGoldenFullwidthDigits() throws {
+        let folded = try tokens("１２３")
+        let ascii = try tokens("123")
+        XCTAssertEqual(folded.map(\.token), ascii.map(\.token))
+        let strict = try tokens("１２３", options: .strictMatch)
+        XCTAssertNotEqual(strict.map(\.token), ascii.map(\.token),
+                          "strictMatch 关闭宽度折叠后全角数字应与半角不同")
+    }
+
+    func testDiacriticFoldGolden() throws {
+        let a = try tokens("café")
+        let b = try tokens("cafe")
+        XCTAssertEqual(a.map(\.token), b.map(\.token))
+    }
+
     func testStopwordPromotionDocumentTokens() throws {
         let opts = CJKTokenizerOptions(stopwords: ["关于"])
         let t = try tokens("关于北京", options: opts)
         // 「关于」bigram 过滤后「关」晋升为主 token；「于北」「北京」「京」仍在
-        XCTAssertTrue(t.map(\.token).contains("关"))
+        XCTAssertEqual(
+            t.map(\.token),
+            ["关", "于北", "于", "北京", "北", "京"]
+        )
         XCTAssertFalse(t.map(\.token).contains("关于"))
-        XCTAssertTrue(t.map(\.token).contains("北京"))
+    }
+
+    func testStopwordPromotionQueryTokens() throws {
+        let opts = CJKTokenizerOptions(stopwords: ["关于"])
+        let t = try tokens("关于北京", options: opts, query: true)
+        // query：bigram「关于」过滤 → 「关」晋升；其余 bigram 无 colocated
+        XCTAssertEqual(t.map(\.token), ["关", "于北", "北京"])
+        XCTAssertEqual(t.map(\.colocated), [false, false, false])
+    }
+
+    func testRecommendedFiltersChineseStopwordUnigram() throws {
+        let t = try tokens("我的", options: .recommended)
+        // 「的」为中文停用词：不作为独立/ colocated token 保留检索
+        XCTAssertFalse(t.map(\.token).contains("的"))
     }
 
     func testHalfwidthDakutenComposesToVoicedKatakana() throws {

@@ -654,18 +654,16 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
 
     @inline(__always)
     private func isUnigramStopword(cp: UInt32) -> Bool {
-        guard let stopwordSet else { return false }
-        var buf = (UInt8(0), UInt8(0), UInt8(0), UInt8(0))
-        return withUnsafeMutablePointer(to: &buf) { ptr in
-            let rawPtr = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
-            let totalLen = encodeUTF8(cp, into: rawPtr)
-            return stopwordSet.contains(UnsafePointer(rawPtr), count: totalLen)
-        }
+        // 单码点停用词走 Set O(1)，避免每次 UTF-8 编码 + 全表二分
+        stopwordSet?.containsCodepoint(cp) ?? false
     }
 
     @inline(__always)
     private func isBigramStopword(cp0: UInt32, cp1: UInt32) -> Bool {
         guard let stopwordSet else { return false }
+        // cjkCommon 等「英文多码点 + 中文单码点」预设下，多码点表无非 ASCII：
+        // CJK bigram 不可能命中，直接短路（显著降低 With Stopwords 热路径开销）
+        guard stopwordSet.mayContainCJKMultiCodepointStopwords else { return false }
         var buf = (UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0))
         return withUnsafeMutablePointer(to: &buf) { ptr in
             let rawPtr = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
