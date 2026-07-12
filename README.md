@@ -81,9 +81,8 @@ let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
 ```swift
 try dbQueue.write { db in
     try db.create(virtualTable: "documents", using: FTS5()) { t in
-        // 默认启用中英文常用停用词过滤与宽度/大小写折叠
-        let stopwords = CJKTokenizerOptions.englishStopwords.union(CJKTokenizerOptions.chineseStopwords)
-        t.tokenizer = .cjk(stopwords: stopwords) 
+        // 推荐：全折叠 + 中英文常用停用词（裸 .cjk() 默认不过滤停用词）
+        t.tokenizer = .cjk(options: .recommended)
         t.column("title")
         t.column("body")
     }
@@ -108,11 +107,23 @@ let docs2 = try Document.matching(anyPattern).fetchAll(db)
 
 ## 配置选项
 
+> **默认行为：** `.cjk()` / `CJKTokenizerOptions()` 开启全折叠（大小写 / 宽度 / 变音符），**不会**启用停用词。  
+> 需要中英文常用停用词时请使用 `.recommended` 或 `StopwordPresets`。
+
 ```swift
-// 默认配置（推荐，全折叠启用）
+// 默认：全折叠，无停用词
 t.tokenizer = .cjk()
 
-// 启用自定义停用词过滤
+// 推荐：全折叠 + 中英文常用停用词
+t.tokenizer = .cjk(options: .recommended)
+
+// 完整 options 对象（扩展新开关时优先走此入口）
+var opts = CJKTokenizerOptions()
+opts.emitUnigrams = false
+opts.stopwords = StopwordPresets.chinese
+t.tokenizer = .cjk(options: opts)
+
+// 便捷参数：自定义停用词
 t.tokenizer = .cjk(stopwords: ["的", "关于", "the"])
 
 // 关闭单字 unigram（减小约 30% 索引体积，但单字查询失效）
@@ -129,6 +140,17 @@ let tokenizer = try db.makeTokenizer(.cjk())
 let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 // → [("清华", []), ("华大", []), ("大学", []), ("学", []), ("hello", [])]
 ```
+
+### 停用词预设
+
+| API | 含义 |
+|---|---|
+| `StopwordPresets.english` | 英文常用停用词 |
+| `StopwordPresets.chinese` | 中文常用停用词 |
+| `StopwordPresets.cjkCommon` | 中英文并集 |
+| `CJKTokenizerOptions.recommended` | 默认折叠 + `cjkCommon` |
+
+兼容别名：`CJKTokenizerOptions.englishStopwords` / `.chineseStopwords` 仍可用。
 
 ## 覆盖的 Unicode 范围
 
@@ -196,7 +218,7 @@ let tokens = try tokenizer.tokenize(document: "清华大学 Hello")
 
 ```
 cjkfts5/
-├── cjkfts5/
+├── cjkfts5/                 # TokenNormalizer / StopwordPresets / CJKTokenizer / …
 │   ├── CJKTokenizer.swift           # 核心分词器（FTS5CustomTokenizer）
 │   ├── CJKTokenizerOptions.swift    # 配置选项类型
 │   ├── CJKUnicodeHelper.swift       # Unicode 范围判断 & 字节偏移工具

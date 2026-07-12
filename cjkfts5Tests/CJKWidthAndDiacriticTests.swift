@@ -104,18 +104,22 @@ final class UnicodeWidthFoldingIntegrationTests: CJKTestBase {
     // 5. 日本语浊音/半浊音折叠 (Voiced / Semi-voiced Sound Marks)
     func testVoicedKatakanaFolding() async throws {
         // 插入含有浊音的半角片假名 "ｶﾞ" (U+FF76 U+FF9E)
+        // 宽度折叠时合成为单个全角浊音 "ガ" (U+30AC)，而非 "カ"+"゛" 两个码点
         try await insert("ｶﾞ")
 
-        // 默认折叠为 "カ" (U+30AB) + "゛" (U+309B)
-        // 两个字符均属于 CJK 区间，因此形成 CJK 段并生成 Bigram: "カ゛"
+        // a) 全角合成浊音应命中
+        let r1 = try await searchAny("ガ")
+        XCTAssertEqual(r1, ["ｶﾞ"], "半角基字+浊点应合成为全角浊音并可检索")
 
-        // a) 全角独立浊音符号匹配
-        let r1 = try await searchAny("カ゛")
-        XCTAssertEqual(r1, ["ｶﾞ"], "应正确支持浊音半角片假名到全角的分意折叠")
-
-        // b) 片假名 "ｶ" 匹配
+        // b) 清音 "カ" 不应误匹配已合成的浊音 "ガ"
         let r2 = try await searchAny("カ")
-        XCTAssertEqual(r2, ["ｶﾞ"], "默认折叠下，应能匹配假名部分")
+        XCTAssertTrue(r2.isEmpty, "合成后不应再按清音基字误命中")
+
+        // c) 半角查询与全角文档互通（反向在 TokenGoldenTests 覆盖）
+        try await insert("パ")
+        let r3 = try await searchAny("ﾊﾟ", in: dbQueue)
+        // 半浊点 FF9F：ﾊﾟ → パ
+        XCTAssertEqual(r3, ["パ"], "半角半浊点应合成全角半浊音")
     }
 
     // 6. 全角空格 (U+3000) 作为分词符

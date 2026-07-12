@@ -24,9 +24,9 @@ public struct StopwordSet: Sendable {
 
     /// 根据传入的原始停用词集合和分词器选项，进行规范化、去重、排序并扁平化构建容器
     public init(stopwords: Set<String>, options: CJKTokenizerOptions) {
-        // 对停用词进行规范化折叠（宽度、大小写、变音符折叠都对齐分词器行为）
+        // 对停用词进行规范化折叠（与 TokenNormalizer / 分词器 emit 对齐）
         let normalizedWords = stopwords.map { word -> [UInt8] in
-            let folded = StopwordSet.normalizeWord(word, options: options)
+            let folded = TokenNormalizer.normalizeWord(word, options: options)
             return Array(folded.utf8)
         }
 
@@ -102,25 +102,9 @@ public struct StopwordSet: Sendable {
 
     // MARK: - 内部辅助方法
 
-    /// 规范化非 CJK 单词。该方法的折叠逻辑必须与分词器 emit 逻辑 100% 保持一致。
+    /// 规范化非 CJK 单词。委托给 `TokenNormalizer`（与分词器 emit 共用单一实现）。
     public static func normalizeWord(_ word: String, options: CJKTokenizerOptions) -> String {
-        var token = word
-        if options.widthFolding {
-            token = token.precomposedStringWithCompatibilityMapping
-        }
-
-        var compareOptions: String.CompareOptions = []
-        if options.diacriticFolding {
-            compareOptions.insert(.diacriticInsensitive)
-        }
-        if options.caseFolding {
-            compareOptions.insert(.caseInsensitive)
-        }
-
-        if !compareOptions.isEmpty {
-            token = token.folding(options: compareOptions, locale: nil)
-        }
-        return token
+        TokenNormalizer.normalizeWord(word, options: options)
     }
 
     @inline(__always)

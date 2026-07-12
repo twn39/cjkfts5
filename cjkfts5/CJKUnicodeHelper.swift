@@ -401,4 +401,36 @@ enum CJKUnicode {
     static func isHalfWidthKatakana(_ v: UInt32) -> Bool {
         return v >= 0xFF61 && v <= 0xFF9F
     }
+
+    /// 可与半角浊点/半浊点组合的半角片假名基字（ｶｷｸｹｺ 等，不含浊点符号本身）。
+    @inline(__always)
+    static func isHalfWidthKatakanaBase(_ v: UInt32) -> Bool {
+        // 半角片假名字母区大致 U+FF66–U+FF9D（不含 FF9E/FF9F 浊点）
+        return v >= 0xFF66 && v <= 0xFF9D
+    }
+
+    /// 将半角片假名基字 + 半角浊点(FF9E)/半浊点(FF9F) 合成为单个全角浊音/半浊音码点。
+    ///
+    /// 例如：`ｶ`(FF76) + `ﾞ`(FF9E) → `ガ`(30AC)。
+    @inline(__always)
+    static func composeHalfwidthKatakana(base: UInt32, mark: UInt32) -> UInt32? {
+        guard mark == 0xFF9E || mark == 0xFF9F else { return nil }
+        let folded = foldWidth(base)
+
+        // ハ行：浊点 +1 → バ行，半浊点 +2 → パ行
+        switch folded {
+        case 0x30CF, 0x30D2, 0x30D5, 0x30D8, 0x30DB: // ハヒフヘホ
+            if mark == 0xFF9E { return folded + 1 }
+            return folded + 2
+        case 0x30A6: // ウ + 濁点 → ヴ
+            return mark == 0xFF9E ? 0x30F4 : nil
+        // カ行・サ行・タ行：仅浊点
+        case 0x30AB, 0x30AD, 0x30AF, 0x30B1, 0x30B3, // カキクケコ
+             0x30B5, 0x30B7, 0x30B9, 0x30BB, 0x30BD, // サシスセソ
+             0x30BF, 0x30C1, 0x30C4, 0x30C6, 0x30C8: // タチツテト
+            return mark == 0xFF9E ? folded + 1 : nil
+        default:
+            return nil
+        }
+    }
 }

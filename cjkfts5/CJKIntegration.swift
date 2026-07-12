@@ -13,17 +13,24 @@ import GRDB
 
 extension FTS5TokenizerDescriptor {
 
-    /// CJK Bigram+Unigram 分词器描述符。
-    ///
-    /// 与 GRDB 内置的 `.unicode61()`、`.porter()` 调用风格完全一致：
+    /// CJK Bigram+Unigram 分词器描述符（推荐入口：传入完整 options）。
     ///
     /// ```swift
-    /// // 默认配置（推荐）
-    /// try db.create(virtualTable: "documents", using: FTS5()) { t in
-    ///     t.tokenizer = .cjk()
-    ///     t.column("title")
-    ///     t.column("body")
-    /// }
+    /// t.tokenizer = .cjk(options: .recommended)  // 折叠 + 中英文停用词
+    /// t.tokenizer = .cjk(options: CJKTokenizerOptions(emitUnigrams: false))
+    /// ```
+    ///
+    /// - Note: 默认 `CJKTokenizerOptions()` **不含**停用词；需要过滤时用 `.recommended`
+    ///   或设置 `stopwords: StopwordPresets.cjkCommon`。
+    public static func cjk(options: CJKTokenizerOptions = CJKTokenizerOptions()) -> FTS5TokenizerDescriptor {
+        CJKTokenizer.tokenizerDescriptor(options: options)
+    }
+
+    /// CJK Bigram+Unigram 分词器描述符（便捷参数版，与 GRDB 内置风格一致）。
+    ///
+    /// ```swift
+    /// // 默认配置（全折叠，无停用词）
+    /// t.tokenizer = .cjk()
     ///
     /// // 关闭单字索引（减小约 30% 索引体积，单字查询将无法命中）
     /// t.tokenizer = .cjk(emitUnigrams: false)
@@ -46,6 +53,9 @@ extension FTS5TokenizerDescriptor {
     ///     但单字查询（如搜索"清"）将无法命中。
     ///   - caseFolding: 是否对非 CJK token（ASCII / Latin Extended 等）
     ///     进行 Unicode 大小写折叠。默认 `true`（大小写不敏感）。
+    ///   - widthFolding: 是否进行全半角宽度折叠。默认 `true`。
+    ///   - diacriticFolding: 是否折叠变音符。默认 `true`。
+    ///   - stopwords: 停用词集合；`nil` 表示不过滤（默认）。
     /// - Returns: 可赋值给 `FTS5TableDefinition.tokenizer` 的描述符。
     public static func cjk(
         emitUnigrams: Bool = true,
@@ -54,15 +64,13 @@ extension FTS5TokenizerDescriptor {
         diacriticFolding: Bool = true,
         stopwords: Set<String>? = nil
     ) -> FTS5TokenizerDescriptor {
-        CJKTokenizer.tokenizerDescriptor(
-            options: CJKTokenizerOptions(
-                emitUnigrams: emitUnigrams,
-                caseFolding: caseFolding,
-                widthFolding: widthFolding,
-                diacriticFolding: diacriticFolding,
-                stopwords: stopwords
-            )
-        )
+        cjk(options: CJKTokenizerOptions(
+            emitUnigrams: emitUnigrams,
+            caseFolding: caseFolding,
+            widthFolding: widthFolding,
+            diacriticFolding: diacriticFolding,
+            stopwords: stopwords
+        ))
     }
 }
 

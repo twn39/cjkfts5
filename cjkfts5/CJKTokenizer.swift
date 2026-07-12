@@ -186,10 +186,13 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         var wordIsPureASCII = true
 
         while bytePos < bytes.count {
-            guard let (codepoint, len) = CJKUnicode.decodeCodepoint(bytes, at: bytePos) else {
+            guard let (foldedCp, originalCp, consumed) = TokenNormalizer.decodeFoldedCodepoint(
+                bytes,
+                at: bytePos,
+                widthFolding: options.widthFolding
+            ) else {
                 // 无效 UTF-8 字节：视作分隔符，先 Flush 已有区间
                 if inCJK {
-                    let segEnd = bytePos
                     let rc = flushCJK(
                         cjkCount: &cjkCount,
                         inCJK: &inCJK,
@@ -199,7 +202,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                         cp1: cp1,
                         orig0: orig0,
                         orig1: orig1,
-                        segEnd: segEnd,
+                        segEnd: bytePos,
                         pText: pText,
                         isQuery: isQuery,
                         callback: callback,
@@ -215,9 +218,6 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                 bytePos += 1
                 continue
             }
-
-            // 可选的 Unicode 宽度折叠
-            let foldedCp = options.widthFolding ? CJKUnicode.foldWidth(codepoint) : codepoint
 
             if CJKUnicode.isCJKCodepoint(foldedCp) {
                 // ── 进入 CJK 区间 ──────────────────────────────────────────
@@ -235,64 +235,33 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                 if cjkCount == 0 {
                     cjk0 = bytePos
                     cp0 = foldedCp
-                    orig0 = codepoint
+                    orig0 = originalCp
                     cjkCount = 1
                 } else if cjkCount == 1 {
                     cjk1 = bytePos
                     cp1 = foldedCp
-                    orig1 = codepoint
+                    orig1 = originalCp
                     cjkCount = 2
                 } else if cjkCount == 2 {
                     cjk2 = bytePos
                     cp2 = foldedCp
-                    orig2 = codepoint
+                    orig2 = originalCp
                     cjkCount = 3
 
-                    // 发射 Bigram (带有停用词过滤与 Unigram 晋升)
-                    let bigramStop = isBigramStopword(cp0: cp0, cp1: cp1)
-                    // 当 bigram 遭遇停用词过滤时，为了保证 Phrase 搜索时 query 与 doc 的 position 一致，
-                    // 即使是 Query 模式（isQuery=true）也必须允许 unigram 晋升发射。
-                    let emitUni = (options.emitUnigrams && !isQuery) || (bigramStop && options.emitUnigrams)
-                    let unigramStop = emitUni ? isUnigramStopword(cp: cp0) : true
-
-                    if !bigramStop || !unigramStop {
-                        if bigramStop {
-                            // Bigram 被过滤，但 Unigram 未被过滤 -> 晋升 Unigram 为当前位置的主 token 发射
-                            let rc: CInt
-                            if orig0 != cp0 {
-                                rc = emitFoldedUnigram(cp: cp0, flags: 0, byteStart: cjk0, byteEnd: cjk1, callback: callback, context: context)
-                            } else {
-                                rc = callback(context, 0, pText.advanced(by: cjk0), CInt(cjk1 - cjk0), CInt(cjk0), CInt(cjk1))
-                            }
-                            guard rc == SQLITE_OK else { return rc }
-                        } else if unigramStop {
-                            // Unigram 被过滤，直接发射 Bigram
-                            let rc: CInt
-                            if orig0 != cp0 || orig1 != cp1 {
-                                rc = emitFoldedBigram(cp0: cp0, cp1: cp1, byteStart: cjk0, byteEnd: cjk2, callback: callback, context: context)
-                            } else {
-                                rc = callback(context, 0, pText.advanced(by: cjk0), CInt(cjk2 - cjk0), CInt(cjk0), CInt(cjk2))
-                            }
-                            guard rc == SQLITE_OK else { return rc }
-                        } else {
-                            // 均未被过滤 -> 发射 Bigram (flag 0) + Unigram (colocated)
-                            let rc1: CInt
-                            if orig0 != cp0 || orig1 != cp1 {
-                                rc1 = emitFoldedBigram(cp0: cp0, cp1: cp1, byteStart: cjk0, byteEnd: cjk2, callback: callback, context: context)
-                            } else {
-                                rc1 = callback(context, 0, pText.advanced(by: cjk0), CInt(cjk2 - cjk0), CInt(cjk0), CInt(cjk2))
-                            }
-                            guard rc1 == SQLITE_OK else { return rc1 }
-
-                            let rc2: CInt
-                            if orig0 != cp0 {
-                                rc2 = emitFoldedUnigram(cp: cp0, flags: FTS5_TOKEN_COLOCATED, byteStart: cjk0, byteEnd: cjk1, callback: callback, context: context)
-                            } else {
-                                rc2 = callback(context, FTS5_TOKEN_COLOCATED, pText.advanced(by: cjk0), CInt(cjk1 - cjk0), CInt(cjk0), CInt(cjk1))
-                            }
-                            guard rc2 == SQLITE_OK else { return rc2 }
-                        }
-                    }
+                    // 发射当前位置 bigram（+ 可选 colocated unigram / 停用词晋升）
+                    // bigram 被过滤时，即使 isQuery 也必须允许 unigram 晋升，保证 phrase 位置对齐
+                    let emitUni = (options.emitUnigrams && !isQuery)
+                        || (isBigramStopword(cp0: cp0, cp1: cp1) && options.emitUnigrams)
+                    let rc = emitCJKPosition(
+                        cp0: cp0, cp1: cp1,
+                        orig0: orig0, orig1: orig1,
+                        byteStart0: cjk0, byteStart1: cjk1, byteEnd: cjk2,
+                        emitColocatedUnigram: emitUni,
+                        pText: pText,
+                        callback: callback,
+                        context: context
+                    )
+                    guard rc == SQLITE_OK else { return rc }
 
                     // 滑动
                     cjk0 = cjk1
@@ -308,7 +277,6 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
             } else {
                 // ── 非 CJK 区间 ──────────────────────────────────────────
                 if inCJK {
-                    let segEnd = bytePos
                     let rc = flushCJK(
                         cjkCount: &cjkCount,
                         inCJK: &inCJK,
@@ -318,7 +286,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                         cp1: cp1,
                         orig0: orig0,
                         orig1: orig1,
-                        segEnd: segEnd,
+                        segEnd: bytePos,
                         pText: pText,
                         isQuery: isQuery,
                         callback: callback,
@@ -331,13 +299,12 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                     if !inWord {
                         inWord = true
                         wordStart = bytePos
-                        wordEnd = bytePos + len
-                        // 注意：此处 wordIsPureASCII 必须根据原始码点判定，
-                        // 确保原始含有非 ASCII 字符（如全角数字/字母）时能正确流向非 ASCII 路径进行规范化折叠
-                        wordIsPureASCII = (codepoint <= 127)
+                        wordEnd = bytePos + consumed
+                        // 原始码点判定 pure ASCII，保证全角字符走 Unicode 规范化路径
+                        wordIsPureASCII = (originalCp <= 127)
                     } else {
-                        wordEnd = bytePos + len
-                        if codepoint > 127 {
+                        wordEnd = bytePos + consumed
+                        if originalCp > 127 {
                             wordIsPureASCII = false
                         }
                     }
@@ -350,7 +317,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
                     }
                 }
             }
-            bytePos += len
+            bytePos += consumed
         }
 
         // ── 循环结束，Flush 剩余状态 ────────────────────────────────────
@@ -479,7 +446,7 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         let byteSlice = UnsafeRawBufferPointer(start: rawStart, count: wordLen)
         let raw = String(decoding: byteSlice, as: UTF8.self)
 
-        let token = StopwordSet.normalizeWord(raw, options: options)
+        let token = TokenNormalizer.normalizeWord(raw, options: options)
 
         if let stopwordSet {
             let isStop = token.utf8.withContiguousStorageIfAvailable { buf in
@@ -589,6 +556,100 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
         }
     }
 
+    // MARK: - CJK 位置发射（主循环与 flush 共用）
+
+    /// 在一个 FTS5 位置上发射 bigram（主 token）及可选 colocated unigram，并处理停用词过滤/晋升。
+    ///
+    /// - Parameters:
+    ///   - byteStart0: 第一字起始字节
+    ///   - byteStart1: 第二字起始字节（亦即第一字结束）
+    ///   - byteEnd: bigram 结束字节（第二字结束 / 下一字起始）
+    ///   - emitColocatedUnigram: 是否尝试发射第一字 unigram（含 query 模式下 bigram 被过滤时的晋升）
+    @inline(__always)
+    private func emitCJKPosition(
+        cp0: UInt32,
+        cp1: UInt32,
+        orig0: UInt32,
+        orig1: UInt32,
+        byteStart0: Int,
+        byteStart1: Int,
+        byteEnd: Int,
+        emitColocatedUnigram: Bool,
+        pText: UnsafePointer<CChar>,
+        callback: FTS5TokenCallback,
+        context: UnsafeMutableRawPointer?
+    ) -> CInt {
+        let bigramStop = isBigramStopword(cp0: cp0, cp1: cp1)
+        let unigramStop = emitColocatedUnigram ? isUnigramStopword(cp: cp0) : true
+
+        if bigramStop && unigramStop {
+            return SQLITE_OK
+        }
+
+        if bigramStop {
+            // Bigram 过滤 → 晋升 Unigram 为主 token（flags=0）
+            return emitCJKUnigram(
+                cp: cp0, orig: orig0,
+                byteStart: byteStart0, byteEnd: byteStart1,
+                flags: 0,
+                pText: pText, callback: callback, context: context
+            )
+        }
+
+        if unigramStop {
+            // 仅 bigram
+            return emitCJKBigram(
+                cp0: cp0, cp1: cp1, orig0: orig0, orig1: orig1,
+                byteStart: byteStart0, byteEnd: byteEnd,
+                pText: pText, callback: callback, context: context
+            )
+        }
+
+        // bigram + colocated unigram
+        let rc1 = emitCJKBigram(
+            cp0: cp0, cp1: cp1, orig0: orig0, orig1: orig1,
+            byteStart: byteStart0, byteEnd: byteEnd,
+            pText: pText, callback: callback, context: context
+        )
+        guard rc1 == SQLITE_OK else { return rc1 }
+        return emitCJKUnigram(
+            cp: cp0, orig: orig0,
+            byteStart: byteStart0, byteEnd: byteStart1,
+            flags: FTS5_TOKEN_COLOCATED,
+            pText: pText, callback: callback, context: context
+        )
+    }
+
+    @inline(__always)
+    private func emitCJKBigram(
+        cp0: UInt32, cp1: UInt32,
+        orig0: UInt32, orig1: UInt32,
+        byteStart: Int, byteEnd: Int,
+        pText: UnsafePointer<CChar>,
+        callback: FTS5TokenCallback,
+        context: UnsafeMutableRawPointer?
+    ) -> CInt {
+        if orig0 != cp0 || orig1 != cp1 {
+            return emitFoldedBigram(cp0: cp0, cp1: cp1, byteStart: byteStart, byteEnd: byteEnd, callback: callback, context: context)
+        }
+        return callback(context, 0, pText.advanced(by: byteStart), CInt(byteEnd - byteStart), CInt(byteStart), CInt(byteEnd))
+    }
+
+    @inline(__always)
+    private func emitCJKUnigram(
+        cp: UInt32, orig: UInt32,
+        byteStart: Int, byteEnd: Int,
+        flags: CInt,
+        pText: UnsafePointer<CChar>,
+        callback: FTS5TokenCallback,
+        context: UnsafeMutableRawPointer?
+    ) -> CInt {
+        if orig != cp {
+            return emitFoldedUnigram(cp: cp, flags: flags, byteStart: byteStart, byteEnd: byteEnd, callback: callback, context: context)
+        }
+        return callback(context, flags, pText.advanced(by: byteStart), CInt(byteEnd - byteStart), CInt(byteStart), CInt(byteEnd))
+    }
+
     // MARK: - 停用词过滤辅助方法
 
     @inline(__always)
@@ -633,62 +694,35 @@ public final class CJKTokenizer: FTS5CustomTokenizer {
     ) -> CInt {
         if cjkCount == 1 {
             if !isUnigramStopword(cp: cp0) {
-                let rc: CInt
-                if orig0 != cp0 {
-                    rc = emitFoldedUnigram(cp: cp0, flags: 0, byteStart: cjk0, byteEnd: segEnd, callback: callback, context: context)
-                } else {
-                    rc = callback(context, 0, pText.advanced(by: cjk0), CInt(segEnd - cjk0), CInt(cjk0), CInt(segEnd))
-                }
+                let rc = emitCJKUnigram(
+                    cp: cp0, orig: orig0,
+                    byteStart: cjk0, byteEnd: segEnd,
+                    flags: 0,
+                    pText: pText, callback: callback, context: context
+                )
                 guard rc == SQLITE_OK else { return rc }
             }
         } else if cjkCount == 2 {
-            let bigramStop = isBigramStopword(cp0: cp0, cp1: cp1)
             let emitUni = options.emitUnigrams && !isQuery
-            let unigram0Stop = emitUni ? isUnigramStopword(cp: cp0) : true
+            let rc = emitCJKPosition(
+                cp0: cp0, cp1: cp1,
+                orig0: orig0, orig1: orig1,
+                byteStart0: cjk0, byteStart1: cjk1, byteEnd: segEnd,
+                emitColocatedUnigram: emitUni,
+                pText: pText,
+                callback: callback,
+                context: context
+            )
+            guard rc == SQLITE_OK else { return rc }
 
-            if !bigramStop || !unigram0Stop {
-                if bigramStop {
-                    let rc: CInt
-                    if orig0 != cp0 {
-                        rc = emitFoldedUnigram(cp: cp0, flags: 0, byteStart: cjk0, byteEnd: cjk1, callback: callback, context: context)
-                    } else {
-                        rc = callback(context, 0, pText.advanced(by: cjk0), CInt(cjk1 - cjk0), CInt(cjk0), CInt(cjk1))
-                    }
-                    guard rc == SQLITE_OK else { return rc }
-                } else if unigram0Stop {
-                    let rc: CInt
-                    if orig0 != cp0 || orig1 != cp1 {
-                        rc = emitFoldedBigram(cp0: cp0, cp1: cp1, byteStart: cjk0, byteEnd: segEnd, callback: callback, context: context)
-                    } else {
-                        rc = callback(context, 0, pText.advanced(by: cjk0), CInt(segEnd - cjk0), CInt(cjk0), CInt(segEnd))
-                    }
-                    guard rc == SQLITE_OK else { return rc }
-                } else {
-                    let rc1: CInt
-                    if orig0 != cp0 || orig1 != cp1 {
-                        rc1 = emitFoldedBigram(cp0: cp0, cp1: cp1, byteStart: cjk0, byteEnd: segEnd, callback: callback, context: context)
-                    } else {
-                        rc1 = callback(context, 0, pText.advanced(by: cjk0), CInt(segEnd - cjk0), CInt(cjk0), CInt(segEnd))
-                    }
-                    guard rc1 == SQLITE_OK else { return rc1 }
-
-                    let rc2: CInt
-                    if orig0 != cp0 {
-                        rc2 = emitFoldedUnigram(cp: cp0, flags: FTS5_TOKEN_COLOCATED, byteStart: cjk0, byteEnd: cjk1, callback: callback, context: context)
-                    } else {
-                        rc2 = callback(context, FTS5_TOKEN_COLOCATED, pText.advanced(by: cjk0), CInt(cjk1 - cjk0), CInt(cjk0), CInt(cjk1))
-                    }
-                    guard rc2 == SQLITE_OK else { return rc2 }
-                }
-            }
-
+            // 文档模式：末字作为独立位置 unigram
             if !isQuery && !isUnigramStopword(cp: cp1) {
-                let rc3: CInt
-                if orig1 != cp1 {
-                    rc3 = emitFoldedUnigram(cp: cp1, flags: 0, byteStart: cjk1, byteEnd: segEnd, callback: callback, context: context)
-                } else {
-                    rc3 = callback(context, 0, pText.advanced(by: cjk1), CInt(segEnd - cjk1), CInt(cjk1), CInt(segEnd))
-                }
+                let rc3 = emitCJKUnigram(
+                    cp: cp1, orig: orig1,
+                    byteStart: cjk1, byteEnd: segEnd,
+                    flags: 0,
+                    pText: pText, callback: callback, context: context
+                )
                 guard rc3 == SQLITE_OK else { return rc3 }
             }
         }

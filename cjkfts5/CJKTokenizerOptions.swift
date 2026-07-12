@@ -9,11 +9,14 @@ import Foundation
 
 /// `CJKTokenizer` 的配置选项
 ///
-/// 通过 `tokenizerDescriptor(options:)` 传入，作为 FTS5 tokenizer 参数：
+/// 通过 `tokenizerDescriptor(options:)` 或 `.cjk(options:)` 传入，作为 FTS5 tokenizer 参数：
 /// ```swift
 /// let opts = CJKTokenizerOptions(emitUnigrams: true, caseFolding: true)
-/// t.tokenizer = CJKTokenizer.tokenizerDescriptor(options: opts)
+/// t.tokenizer = .cjk(options: opts)
 /// ```
+///
+/// **默认行为说明：** `.cjk()` / 默认 `CJKTokenizerOptions()` **不会**启用停用词过滤。
+/// 若需要中英文常用停用词，请使用 `.recommended` 或显式传入 `StopwordPresets`。
 public struct CJKTokenizerOptions: Sendable {
     /// 是否同时在 bigram 同一位置额外发出单字 unigram token。
     ///
@@ -29,7 +32,7 @@ public struct CJKTokenizerOptions: Sendable {
 
     /// 是否进行 Unicode 宽度正规化（全角转半角，半角假名转全角假名）。
     ///
-    /// - `true`（默认）：全半角混排文本可互相搜索（"１２３"与"123"、"ﾃｽﾄ"与"测试"均命中）
+    /// - `true`（默认）：全半角混排文本可互相搜索（"１２３"与"123"、"ﾃｽﾄ"与"テスト"均命中）
     /// - `false`：保留原始宽度，全角半角不互通
     public var widthFolding: Bool
 
@@ -56,33 +59,20 @@ public struct CJKTokenizerOptions: Sendable {
         self.stopwords = stopwords
     }
 
-    // MARK: Built-in 默认停用词集
+    /// 推荐配置：全折叠开启 + 中英文常用停用词。
+    ///
+    /// 与裸 `.cjk()`（无停用词）不同；适合多数中英混合全文检索场景。
+    public static var recommended: CJKTokenizerOptions {
+        CJKTokenizerOptions(stopwords: StopwordPresets.cjkCommon)
+    }
 
-    /// 默认英文停用词表
-    public static let englishStopwords: Set<String> = [
-        "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren't",
-        "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by",
-        "can't", "cannot", "could", "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't",
-        "down", "during", "each", "few", "for", "from", "further", "had", "hadn't", "has", "hasn't", "have",
-        "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here", "here's", "hers", "herself",
-        "him", "himself", "his", "how", "how's", "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into",
-        "is", "isn't", "it", "it's", "its", "itself", "let's", "me", "more", "most", "mustn't", "my",
-        "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought", "our",
-        "ours", "ourselves", "out", "over", "own", "same", "shan't", "she", "she'd", "she'll", "she's",
-        "should", "shouldn't", "so", "some", "such", "than", "that", "that's", "the", "their", "theirs",
-        "them", "themselves", "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
-        "they've", "this", "those", "through", "to", "too", "under", "until", "up", "very", "was", "wasn't",
-        "we", "we'd", "we'll", "we're", "we've", "were", "weren't", "what", "what's", "when", "when's",
-        "where", "where's", "which", "while", "who", "who's", "whom", "why", "why's", "with", "won't",
-        "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours", "yourself",
-        "yourselves"
-    ]
+    // MARK: Built-in 默认停用词集（兼容别名）
 
-    /// 默认中文常见停用词表
-    public static let chineseStopwords: Set<String> = [
-        "的", "了", "和", "是", "在", "我", "有", "这", "个", "他", "们", "就", "人", "都", "一", "而",
-        "及", "与", "也", "着", "它", "之", "为", "以", "所", "于", "上", "下", "那"
-    ]
+    /// 默认英文停用词表（等同 `StopwordPresets.english`）
+    public static var englishStopwords: Set<String> { StopwordPresets.english }
+
+    /// 默认中文常见停用词表（等同 `StopwordPresets.chinese`）
+    public static var chineseStopwords: Set<String> { StopwordPresets.chinese }
 
     // MARK: 内部：与 FTS5 arguments 字符串互转
 
@@ -94,8 +84,13 @@ public struct CJKTokenizerOptions: Sendable {
         if !widthFolding { args.append("no_width_fold") }
         if !diacriticFolding { args.append("no_diacritic_fold") }
         if let stopwords, !stopwords.isEmpty {
-            args.append("stopwords")
-            args.append(stopwords.sorted().joined(separator: ","))
+            if let preset = StopwordPresets.presetID(matching: stopwords) {
+                args.append("stopwords_preset")
+                args.append(preset)
+            } else {
+                args.append("stopwords")
+                args.append(Self.encodeStopwordList(stopwords))
+            }
         }
         return args
     }
@@ -103,15 +98,71 @@ public struct CJKTokenizerOptions: Sendable {
     /// 从 FTS5 tokenizer argument 列表还原选项
     init(arguments: [String]) {
         emitUnigrams = !arguments.contains("no_unigram")
-        caseFolding  = !arguments.contains("no_case_fold")
+        caseFolding = !arguments.contains("no_case_fold")
         widthFolding = !arguments.contains("no_width_fold")
         diacriticFolding = !arguments.contains("no_diacritic_fold")
-        if let idx = arguments.firstIndex(of: "stopwords"), idx + 1 < arguments.count {
-            let listStr = arguments[idx + 1]
-            let words = listStr.split(separator: ",").map(String.init)
-            stopwords = Set(words)
-        } else {
-            stopwords = nil
+
+        var words: Set<String> = []
+        if let idx = arguments.firstIndex(of: "stopwords_preset"), idx + 1 < arguments.count,
+           let preset = StopwordPresets.resolve(preset: arguments[idx + 1]) {
+            words.formUnion(preset)
         }
+        if let idx = arguments.firstIndex(of: "stopwords"), idx + 1 < arguments.count {
+            words.formUnion(Self.decodeStopwordList(arguments[idx + 1]))
+        }
+        stopwords = words.isEmpty ? nil : words
+    }
+
+    // MARK: - 停用词列表编解码（支持逗号转义）
+
+    /// 编码停用词列表：`,` 与 `\` 转义为 `\,` / `\\`，词之间用 `,` 分隔。
+    static func encodeStopwordList(_ words: Set<String>) -> String {
+        words.sorted().map(escapeStopwordComponent).joined(separator: ",")
+    }
+
+    /// 解码停用词列表（与 `encodeStopwordList` 对称）。
+    static func decodeStopwordList(_ encoded: String) -> Set<String> {
+        var result: [String] = []
+        var current = ""
+        var escaped = false
+        for ch in encoded {
+            if escaped {
+                current.append(ch)
+                escaped = false
+                continue
+            }
+            if ch == "\\" {
+                escaped = true
+                continue
+            }
+            if ch == "," {
+                if !current.isEmpty {
+                    result.append(current)
+                }
+                current = ""
+                continue
+            }
+            current.append(ch)
+        }
+        if escaped {
+            // 尾部孤立 `\`：按字面保留
+            current.append("\\")
+        }
+        if !current.isEmpty {
+            result.append(current)
+        }
+        return Set(result)
+    }
+
+    private static func escapeStopwordComponent(_ word: String) -> String {
+        var out = ""
+        out.reserveCapacity(word.count)
+        for ch in word {
+            if ch == "\\" || ch == "," {
+                out.append("\\")
+            }
+            out.append(ch)
+        }
+        return out
     }
 }

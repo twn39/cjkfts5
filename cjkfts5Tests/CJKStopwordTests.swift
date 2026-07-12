@@ -112,11 +112,12 @@ final class StopwordTests: CJKTestBase {
 
     // 5. 停用词 100% 零堆分配测试
     func testStopwordsZeroAllocation() async throws {
-        let stopwords = CJKTokenizerOptions.englishStopwords.union(CJKTokenizerOptions.chineseStopwords)
+        let stopwords = StopwordPresets.cjkCommon
         let db = try makeDB(options: CJKTokenizerOptions(stopwords: stopwords))
 
         try await db.write { db in
-            let tokenizer = try CJKTokenizer(db: db, arguments: ["stopwords", stopwords.sorted().joined(separator: ",")])
+            // 使用 options.arguments 往返，覆盖 preset 紧凑编码路径
+            let tokenizer = try CJKTokenizer(db: db, arguments: CJKTokenizerOptions(stopwords: stopwords).arguments)
 
             let callback: FTS5TokenCallback = { _, _, _, _, _, _ in
                 return 0

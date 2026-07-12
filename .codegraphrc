@@ -1,0 +1,12 @@
+{
+  "include": [
+    "cjkfts5",
+    "cjkfts5Tests"
+  ],
+  "exclude": [
+    ".build",
+    "docs"
+  ],
+  "output": ".codegraph",
+  "cache": true
+}
