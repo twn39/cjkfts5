@@ -9,7 +9,7 @@
 | 项 | 要求 |
 |---|---|
 | Swift tools | 6.1+ |
-| GRDB | 7.10+（CI 矩阵覆盖 7.10.0） |
+| GRDB | 7.10+（CI 矩阵覆盖 7.10.0 / 7.11.1） |
 | 平台 | iOS 16+ / macOS 13+ |
 | 产品 | 单一 library target `cjkfts5` |
 
@@ -111,7 +111,7 @@ GRDB 在构造 `matchingAnyTokenIn` 时用 **内置 ascii** 分词，不是表�
 
 - Runner：`macos-15`，Xcode `latest-stable`（Swift 6.1+）  
 - Swift tools：6.1  
-- GRDB：7.10.0  
+- GRDB：7.10.0 / 7.11.1  
 - `swift build -c release` + `swift test --parallel`  
 
 ---

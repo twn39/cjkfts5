@@ -16,7 +16,7 @@ jobs:
       matrix:
         # GRDB >= 7.9 requires Swift tools 6.1; package pins GRDB 7.10+
         swift: ["6.1"]
-        grdb: ["7.10.0"]
+        grdb: ["7.10.0", "7.11.1"]
 
     steps:
       - name: Checkout
