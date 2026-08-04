@@ -7,7 +7,7 @@ import XCTest
 import GRDB
 @testable import cjkfts5
 
-final class UnicodeWidthFoldingIntegrationTests: CJKTestBase {
+final class UnicodeWidthFoldingIntegrationTests: CJKTestBase, @unchecked Sendable {
 
     // 1. 默认启用折叠：全角/半角 ASCII 混合匹配与大小写折叠
     func testDefaultWidthFoldingWithASCII() async throws {
@@ -142,7 +142,7 @@ final class UnicodeWidthFoldingIntegrationTests: CJKTestBase {
     }
 }
 
-final class DiacriticFoldingIntegrationTests: CJKTestBase {
+final class DiacriticFoldingIntegrationTests: CJKTestBase, @unchecked Sendable {
 
     // 1. 默认配置下（diacriticFolding = true, caseFolding = true）
     func testDefaultDiacriticFolding() async throws {

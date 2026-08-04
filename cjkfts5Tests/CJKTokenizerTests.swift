@@ -14,7 +14,9 @@ import GRDB
 ///
 /// 集成测试应优先复用本基类，避免各文件重复 `prepareDatabase` 样板。
 /// 变更默认 options 时会大面积影响子类——视作契约变更并同步 golden / 设计文档。
-class CJKTestBase: XCTestCase {
+///
+/// `@unchecked Sendable`：`DatabaseQueue`/`DatabasePool` 自身线程安全；测试夹具可在 TaskGroup 中捕获 `self`。
+class CJKTestBase: XCTestCase, @unchecked Sendable {
 
     /// 默认套件使用的内存库（`setUp` 中按 default options 创建）
     var dbQueue: DatabaseQueue!
@@ -87,7 +89,7 @@ class CJKTestBase: XCTestCase {
 
 // MARK: - 单字查询测试
 
-final class SingleCharSearchTests: CJKTestBase {
+final class SingleCharSearchTests: CJKTestBase, @unchecked Sendable {
 
     func testSingleCharHit() async throws {
         try await insert("清华大学")
@@ -117,7 +119,7 @@ final class SingleCharSearchTests: CJKTestBase {
 
 // MARK: - Bigram 查询测试
 
-final class BigramSearchTests: CJKTestBase {
+final class BigramSearchTests: CJKTestBase, @unchecked Sendable {
 
     func testBigramHit() async throws {
         try await insert("北京清华大学")
@@ -172,7 +174,7 @@ final class BigramSearchTests: CJKTestBase {
 
 // MARK: - Phrase 查询测试
 
-final class PhraseSearchTests: CJKTestBase {
+final class PhraseSearchTests: CJKTestBase, @unchecked Sendable {
 
     func testPhraseHit() async throws {
         try await insert("北京清华大学")
@@ -209,7 +211,7 @@ final class PhraseSearchTests: CJKTestBase {
 
 // MARK: - 混合文本测试
 
-final class MixedTextTests: CJKTestBase {
+final class MixedTextTests: CJKTestBase, @unchecked Sendable {
 
     func testMixedCJKAndASCII() async throws {
         try await insert("清华大学 Tsinghua University 2024")
@@ -244,7 +246,7 @@ final class MixedTextTests: CJKTestBase {
 
 // MARK: - 多语言测试
 
-final class MultiLanguageTests: CJKTestBase {
+final class MultiLanguageTests: CJKTestBase, @unchecked Sendable {
 
     func testJapaneseHiragana() async throws {
         try await insert("とうきょうだいがく")  // 東京大学（平假名）
@@ -295,7 +297,7 @@ final class MultiLanguageTests: CJKTestBase {
 
 // MARK: - 边界条件测试
 
-final class EdgeCaseTests: CJKTestBase {
+final class EdgeCaseTests: CJKTestBase, @unchecked Sendable {
 
     func testEmptyDocument() async throws {
         try await insert("")
@@ -340,7 +342,7 @@ final class EdgeCaseTests: CJKTestBase {
 
 // MARK: - 配置选项测试
 
-final class OptionTests: CJKTestBase {
+final class OptionTests: CJKTestBase, @unchecked Sendable {
 
     // MARK: no_unigram
 
@@ -427,7 +429,7 @@ final class OptionTests: CJKTestBase {
 /// - bigram token 行为相同——均进入索引
 /// - co-located unigram 被抑制——单字 phrase 查询不再命中非末字
 /// - 末字 unigram 始终发出（`count>1` 时 L348，`count==1` 时 L296）
-final class NoUnigramPhraseTests: CJKTestBase {
+final class NoUnigramPhraseTests: CJKTestBase, @unchecked Sendable {
 
     // MARK: T1 — 基础 Phrase 命中（bigram 不受 no_unigram 影响）
 
@@ -667,7 +669,7 @@ final class NoUnigramPhraseTests: CJKTestBase {
 
 /// 验证扩展 C-G/I 字符在真实 FTS5 分词与搜索中行为正确。
 /// 使用 CJKTestBase 继承内存数据库与辅助方法。
-final class ExtendedUnicodeSearchTests: CJKTestBase {
+final class ExtendedUnicodeSearchTests: CJKTestBase, @unchecked Sendable {
 
     // MARK: 扩展 C：U+2A700–U+2B73F（Unicode 6.0）
 

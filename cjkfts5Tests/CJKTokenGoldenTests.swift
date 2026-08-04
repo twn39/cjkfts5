@@ -160,7 +160,7 @@ final class TokenizerOptionsCodecTests: XCTestCase {
 
 // MARK: - Token 金标（document / query）
 
-final class TokenGoldenTests: CJKTestBase {
+final class TokenGoldenTests: CJKTestBase, @unchecked Sendable {
 
     private struct Tok: Equatable {
         let token: String
@@ -280,7 +280,7 @@ final class TokenGoldenTests: CJKTestBase {
 
 // MARK: - Phrase + 停用词位置
 
-final class StopwordPhrasePositionTests: CJKTestBase {
+final class StopwordPhrasePositionTests: CJKTestBase, @unchecked Sendable {
 
     func testPhraseAcrossPromotedStopword() async throws {
         let stopwords: Set<String> = ["关于"]

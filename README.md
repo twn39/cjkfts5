@@ -1,7 +1,7 @@
 # cjkfts5 — 通用 CJK FTS5 分词库
 
-[![Swift](https://img.shields.io/badge/Swift-5.9+-orange)](https://swift.org)
-[![GRDB](https://img.shields.io/badge/GRDB-7.x-blue)](https://github.com/groue/GRDB.swift)
+[![Swift](https://img.shields.io/badge/Swift-6.1+-orange)](https://swift.org)
+[![GRDB](https://img.shields.io/badge/GRDB-7.10+-blue)](https://github.com/groue/GRDB.swift)
 [![Platform](https://img.shields.io/badge/Platform-iOS%2016%2B%20%7C%20macOS%2013%2B-blue)](https://developer.apple.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/twn39/cjkfts5/actions/workflows/ci.yml/badge.svg)](https://github.com/twn39/cjkfts5/actions/workflows/ci.yml)

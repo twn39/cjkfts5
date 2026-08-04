@@ -7,7 +7,7 @@ import XCTest
 import GRDB
 @testable import cjkfts5
 
-final class UnicodeCaseFoldingTests: CJKTestBase {
+final class UnicodeCaseFoldingTests: CJKTestBase, @unchecked Sendable {
 
     // MARK: T1 — Latin Extended 基础折叠（变音符不被移除）
 

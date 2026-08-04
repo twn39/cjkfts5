@@ -1,6 +1,6 @@
 # GRDB 7.x 兼容性说明
 
-> 适用于 **cjkfts5** 与 **GRDB 7.5+**（`Package.swift` 声明 `.upToNextMajor(from: "7.5.0")`）。
+> 适用于 **cjkfts5** 与 **GRDB 7.10+**（`Package.swift` 声明 `.upToNextMajor(from: "7.10.0")`，`swift-tools-version: 6.1`）。
 
 ---
 
@@ -8,8 +8,8 @@
 
 | 项 | 要求 |
 |---|---|
-| Swift | 5.9+ |
-| GRDB | 7.x（CI 矩阵覆盖 7.5 / 7.8 / 7.10） |
+| Swift tools | 6.1+ |
+| GRDB | 7.10+（CI 矩阵覆盖 7.10.0） |
 | 平台 | iOS 16+ / macOS 13+ |
 | 产品 | 单一 library target `cjkfts5` |
 
@@ -109,8 +109,9 @@ GRDB 在构造 `matchingAnyTokenIn` 时用 **内置 ascii** 分词，不是表�
 
 `.github/workflows/ci.yml`：
 
-- Swift：5.9 / 5.10 / 6.0  
-- GRDB：7.5.0 / 7.8.0 / 7.10.0  
+- Runner：`macos-15`，Xcode `latest-stable`（Swift 6.1+）  
+- Swift tools：6.1  
+- GRDB：7.10.0  
 - `swift build -c release` + `swift test --parallel`  
 
 ---
@@ -121,4 +122,5 @@ GRDB 在构造 `matchingAnyTokenIn` 时用 **内置 ascii** 分词，不是表�
 |---|---|
 | 初版 | Bigram+Unigram、`FTS5CustomTokenizer`、GRDB 7 集成 |
 | 后续 | 宽度/变音符折叠、停用词、`TokenNormalizer` 统一规范化、`StopwordPresets`、`.recommended` |
+| 工具链 | 升级至 Swift tools 6.1 + GRDB 7.10+（GRDB ≥ 7.9 要求 tools 6.1） |
 | 兼容策略 | GRDB 7.x 向上兼容；破坏性 tokenizer 语义变更走 semver major 并要求重索引 |

@@ -9,13 +9,14 @@ on:
 jobs:
   test:
     name: Swift ${{ matrix.swift }} / GRDB ${{ matrix.grdb }}
-    runs-on: macos-14
+    runs-on: macos-15
 
     strategy:
       fail-fast: false
       matrix:
-        swift: ["5.9", "5.10", "6.0"]
-        grdb: ["7.5.0", "7.8.0", "7.10.0"]
+        # GRDB >= 7.9 requires Swift tools 6.1; package pins GRDB 7.10+
+        swift: ["6.1"]
+        grdb: ["7.10.0"]
 
     steps:
       - name: Checkout
@@ -24,11 +25,12 @@ jobs:
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
+          # Xcode 16.3+ ships Swift 6.1; latest-stable on macos-15 is sufficient
           xcode-version: latest-stable
 
       - name: Pin GRDB version
         run: |
-          # 用 jq 修改 Package.resolved 中的 GRDB 版本，测试指定版本
+          # 修改 Package.resolved 中的 GRDB 版本，测试指定版本
           RESOLVED=Package.resolved
           GRDB_VERSION="${{ matrix.grdb }}"
           if [ -f "$RESOLVED" ]; then

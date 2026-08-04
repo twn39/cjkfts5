@@ -7,7 +7,7 @@ import XCTest
 import GRDB
 @testable import cjkfts5
 
-final class StopwordTests: CJKTestBase {
+final class StopwordTests: CJKTestBase, @unchecked Sendable {
 
     // 1. 测试默认配置（无停用词）
     func testNoStopwordsByDefault() async throws {
@@ -193,6 +193,7 @@ final class StopwordTests: CJKTestBase {
 }
 
 private struct ZeroAllocationTracker {
-    static var count = 0
-    static var enabled = false
+    // malloc_logger C 回调与主测试线程共享；测试串行控制启停
+    nonisolated(unsafe) static var count = 0
+    nonisolated(unsafe) static var enabled = false
 }

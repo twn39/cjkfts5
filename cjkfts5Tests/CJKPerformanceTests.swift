@@ -7,7 +7,7 @@ import XCTest
 import GRDB
 @testable import cjkfts5
 
-final class ConcurrencyTests: CJKTestBase {
+final class ConcurrencyTests: CJKTestBase, @unchecked Sendable {
 
     // MARK: 维度 A — 静态工具函数并发确定性
 
@@ -286,18 +286,19 @@ final class ConcurrencyTests: CJKTestBase {
 
         // 步骤 2：50 个并发任务，每个使用独立 DB 实例验证分词结果
         let concurrency = 50
+        let expectedBaselines = baselines
         var failures = [(task: Int, key: String, expected: [String], actual: [String])]()
 
         await withTaskGroup(of: (Int, String, [String], [String])?.self) { group in
             for i in 0..<concurrency {
                 let (doc, query) = testCases[i % testCases.count]
                 let key = "\(doc):\(query)"
+                let expected = expectedBaselines[key]!
                 group.addTask { [self] in
                     do {
                         let db = try self.makeDB()
                         try await self.insert(doc, into: db)
                         let actual = try await self.searchAny(query, in: db)
-                        let expected = baselines[key]!
                         if actual.sorted() != expected {
                             return (i, key, expected, actual.sorted())
                         }
@@ -321,7 +322,7 @@ final class ConcurrencyTests: CJKTestBase {
 /// 线程安全的计数器 and 结果收集器，仅供并发测试使用。
 ///
 /// 使用 NSLock 实现轻量级互斥，避免引入 actor 或 DispatchQueue 的额外语义。
-private final class LockProtected<T> {
+private final class LockProtected<T>: @unchecked Sendable {
     private var _value: T
     private let lock = NSLock()
 
@@ -340,11 +341,12 @@ extension LockProtected where T == Int {
     func increment() { mutate { $0 += 1 } }
 }
 
-final class ZeroAllocationTests: CJKTestBase {
+final class ZeroAllocationTests: CJKTestBase, @unchecked Sendable {
 
     private struct AllocationTracker {
-        static var count = 0
-        static var enabled = false
+        // malloc_logger C 回调与主测试线程共享；测试串行控制启停
+        nonisolated(unsafe) static var count = 0
+        nonisolated(unsafe) static var enabled = false
     }
 
     private typealias MallocLogger = @convention(c) (UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt32, UInt32) -> Void
@@ -430,7 +432,7 @@ final class ZeroAllocationTests: CJKTestBase {
     }
 }
 
-final class TokenizerBenchmarkTests: CJKTestBase {
+final class TokenizerBenchmarkTests: CJKTestBase, @unchecked Sendable {
 
     func testCompleteBenchmarkSuite() async throws {
         // 1. 准备 5,000 条混合中英文测试文档（总大小约 2.6 MB）
