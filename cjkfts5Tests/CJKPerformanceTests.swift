@@ -435,7 +435,7 @@ final class ZeroAllocationTests: CJKTestBase, @unchecked Sendable {
 final class TokenizerBenchmarkTests: CJKTestBase, @unchecked Sendable {
 
     func testCompleteBenchmarkSuite() async throws {
-        // 1. 准备 5,000 条混合中英文测试文档（总大小约 2.6 MB）
+        // 1. 准备混合中英文测试文档（Debug / 常规测试下只使用少量样例快速回归；压测/Release下使用 5,000 条）
         let baseParagraph = """
         基于 Bigram + Unigram 混合策略的通用 CJK（中文/日文/韩文）FTS5 分词器，专为 GRDB 设计。
         它是一个零依赖的纯 Swift 实现，无 C++ 或任何词典文件。它具有零初始化延迟和完美的 Token 对称性，
@@ -445,7 +445,11 @@ final class TokenizerBenchmarkTests: CJKTestBase, @unchecked Sendable {
         在停用词过滤开启时，核心热路径依然实现 100% 零堆内存分配，具有极佳的缓存局部性。
         """
 
-        let docCount = 5000
+        let isBenchmarkRequested = ProcessInfo.processInfo.environment["ENABLE_BENCHMARK"] == "1"
+            || ProcessInfo.processInfo.arguments.contains(where: { $0.contains("TokenizerBenchmarkTests") })
+
+        let docCount = isBenchmarkRequested ? 5000 : 10
+
         let documents: [String] = {
             var docs: [String] = []
             docs.reserveCapacity(docCount)

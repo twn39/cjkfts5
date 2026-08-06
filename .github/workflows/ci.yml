@@ -54,5 +54,16 @@ jobs:
       - name: Build
         run: swift build -c release
 
-      - name: Run tests
-        run: swift test --parallel
+      - name: Run tests with code coverage
+        run: swift test --parallel --enable-code-coverage
+
+      - name: Report Code Coverage
+        if: always()
+        run: |
+          bash scripts/coverage.sh --skip-test --check-threshold 90 > coverage_report.txt
+          echo "### 📊 Code Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage_report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+

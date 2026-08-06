@@ -33,3 +33,9 @@ Icon?
 # ===== SPM Resolved (commit 或忽略视团队策略而定) =====
 Package.resolved
 .codegraph
+
+# ===== Coverage =====
+coverage/
+*.lcov
+coverage_report.txt
+
